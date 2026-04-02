@@ -1,0 +1,29 @@
+{
+  "name": "telegram-subscription-bot",
+  "version": "2.0.0",
+  "description": "Production-ready Telegram Subscription Management Bot with advanced features",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "nodemon src/index.js",
+    "import:legacy-csv": "node src/utils/importLegacyUsersCsv.js",
+    "migrate:subscription-categories": "node src/utils/backfillSubscriptionCategories.js",
+    "verify": "node scripts/verify-syntax.js",
+    "test": "jest --silent",
+    "test:watch": "jest --watch",
+    "test:coverage": "jest --coverage"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.5",
+    "express": "^4.19.2",
+    "mongoose": "^8.3.4",
+    "node-cron": "^3.0.3",
+    "telegraf": "^4.16.3",
+    "uuid": "^9.0.1",
+    "winston": "^3.13.0"
+  },
+  "devDependencies": {
+    "jest": "^30.3.0",
+    "nodemon": "^3.1.0"
+  }
+}
