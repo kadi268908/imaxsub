@@ -2,7 +2,7 @@
 // Simple external support: users use SUPPORT_CONTACT (Telegram @username or https URL).
 // In-bot forum topics / tickets are not used.
 
-const SUPPORT_CONTACT = process.env.SUPPORT_CONTACT || '@RahiImax_Bot';
+const SUPPORT_CONTACT = process.env.SUPPORT_CONTACT || '@ImaxSupport1Bot';
 
 /** No forum group — kept for backward compatibility; always falsy. */
 const SUPPORT_GROUP_ID = undefined;

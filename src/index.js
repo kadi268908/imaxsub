@@ -302,7 +302,7 @@ bot.use(async (ctx, next) => {
   const user = await User.findOne({ telegramId });
   if (!user?.isBlocked) return next();
 
-  const supportContact = process.env.SUPPORT_CONTACT || '@RahiImax_Bot';
+  const supportContact = process.env.SUPPORT_CONTACT || '@ImaxSupport1Bot';
   const blockedMsg = `⛔ *You have been banned from using this bot.*\n\nPlease contact support for this issue: ${supportContact}`;
 
   if (ctx.callbackQuery) {
