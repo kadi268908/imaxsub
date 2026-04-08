@@ -133,6 +133,47 @@ const parseSuperAdminIds = () => {
 
 const isLikelyTelegramGroupId = (value) => /^-?\d+$/.test(String(value || '').trim());
 
+const isMarkdownParseEntityError = (err) => {
+  const message = err?.response?.description || err?.description || err?.message || '';
+  return String(message).toLowerCase().includes("can't parse entities");
+};
+
+const extractEntityErrorOffset = (message) => {
+  const match = String(message || '').match(/byte offset\s+(\d+)/i);
+  return match ? Number(match[1]) : null;
+};
+
+const getUpdateDebugPreview = (ctx) => {
+  const messageText = String(ctx.message?.text || ctx.message?.caption || '').trim();
+  const callbackData = String(ctx.callbackQuery?.data || '').trim();
+  const inlineText = String(ctx.callbackQuery?.message?.text || ctx.callbackQuery?.message?.caption || '').trim();
+  const source = messageText || callbackData || inlineText;
+  return source.replace(/\s+/g, ' ').slice(0, 220);
+};
+
+const normalizeLeadingBackslashCommand = (message) => {
+  const text = String(message?.text || '');
+  if (!text.startsWith('\\')) return;
+
+  // Convert "\command args" into "/command args" for users who type backslash commands.
+  const converted = `/${text.slice(1)}`;
+  message.text = converted;
+
+  const firstToken = converted.trim().split(/\s+/, 1)[0] || '';
+  const commandLength = firstToken.length;
+  if (!commandLength) return;
+
+  const entities = Array.isArray(message.entities) ? [...message.entities] : [];
+  if (!entities.some((entity) => entity?.offset === 0 && entity?.type === 'bot_command')) {
+    entities.unshift({
+      offset: 0,
+      length: commandLength,
+      type: 'bot_command',
+    });
+  }
+  message.entities = entities;
+};
+
 const validatePremiumGroupConfigAtStartup = () => {
   const categoryMap = {
     movie: process.env.MOVIE_PREMIUM_GROUP_ID,
@@ -225,35 +266,62 @@ if (!superAdminIds.length) {
 const bot = new Telegraf(process.env.BOT_TOKEN);
 
 const protectBotMessages = String(process.env.PROTECT_BOT_MESSAGES || 'true').toLowerCase() !== 'false';
-if (protectBotMessages) {
-  const protectedMethods = new Set([
-    'sendMessage',
-    'sendPhoto',
-    'sendVideo',
-    'sendAudio',
-    'sendDocument',
-    'sendVoice',
-    'sendAnimation',
-    'sendVideoNote',
-    'sendSticker',
-    'sendMediaGroup',
-  ]);
+const protectedMethods = new Set([
+  'sendMessage',
+  'sendPhoto',
+  'sendVideo',
+  'sendAudio',
+  'sendDocument',
+  'sendVoice',
+  'sendAnimation',
+  'sendVideoNote',
+  'sendSticker',
+  'sendMediaGroup',
+]);
 
-  const originalCallApi = bot.telegram.callApi.bind(bot.telegram);
-  bot.telegram.callApi = (method, payload, ...rest) => {
-    const safePayload = payload && typeof payload === 'object' ? { ...payload } : payload;
+const originalCallApi = bot.telegram.callApi.bind(bot.telegram);
+bot.telegram.callApi = (method, payload, ...rest) => {
+  const safePayload = payload && typeof payload === 'object' ? { ...payload } : payload;
 
-    if (
-      safePayload &&
-      protectedMethods.has(method) &&
-      typeof safePayload.protect_content === 'undefined'
-    ) {
-      safePayload.protect_content = true;
+  if (
+    protectBotMessages &&
+    safePayload &&
+    protectedMethods.has(method) &&
+    typeof safePayload.protect_content === 'undefined'
+  ) {
+    safePayload.protect_content = true;
+  }
+
+  return originalCallApi(method, safePayload, ...rest).catch((err) => {
+    const hasFormattingPayload = Boolean(
+      safePayload?.parse_mode === 'Markdown'
+      || safePayload?.parse_mode === 'MarkdownV2'
+      || Array.isArray(safePayload?.entities)
+      || Array.isArray(safePayload?.caption_entities)
+    );
+    if (!hasFormattingPayload || !isMarkdownParseEntityError(err)) {
+      throw err;
     }
 
-    return originalCallApi(method, safePayload, ...rest);
-  };
+    const previewRaw = typeof safePayload?.text === 'string'
+      ? safePayload.text
+      : (typeof safePayload?.caption === 'string' ? safePayload.caption : '');
+    const preview = previewRaw.replace(/\s+/g, ' ').slice(0, 160);
 
+    logger.warn(
+      `Telegram Markdown parse fallback on ${method}; retrying without parse_mode. Preview: ${preview}`
+    );
+
+    const fallbackPayload = { ...safePayload };
+    delete fallbackPayload.parse_mode;
+    delete fallbackPayload.entities;
+    delete fallbackPayload.caption_entities;
+
+    return originalCallApi(method, fallbackPayload, ...rest);
+  });
+};
+
+if (protectBotMessages) {
   logger.info('Bot content protection enabled (anti-forward on supported clients).');
 }
 
@@ -262,6 +330,15 @@ bot.catch((err, ctx) => {
   const message = err?.response?.description || err?.description || err?.message || '';
   if (String(message).toLowerCase().includes('message is not modified')) {
     return;
+  }
+
+  if (isMarkdownParseEntityError(err)) {
+    const offset = extractEntityErrorOffset(message);
+    const preview = getUpdateDebugPreview(ctx);
+    const callbackData = String(ctx.callbackQuery?.data || '');
+    logger.error(
+      `Parse entities debug: updateType=${ctx.updateType}; offset=${offset ?? 'n/a'}; callback=${callbackData || 'n/a'}; preview=${preview || 'n/a'}`
+    );
   }
 
   logger.error(`Bot error [${ctx.updateType}]: ${err.message}`);
@@ -295,6 +372,10 @@ bot.on('chat_member', async (ctx, next) => {
 
 // Global guard: blocked users cannot use the bot
 bot.use(async (ctx, next) => {
+  if (ctx.updateType === 'message' && ctx.message?.text) {
+    normalizeLeadingBackslashCommand(ctx.message);
+  }
+
   const telegramId = ctx.from?.id;
   if (!telegramId) return next();
 

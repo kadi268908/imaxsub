@@ -2,7 +2,7 @@ const { escapeMarkdown, escapeMarkdownInlineCode } = require('../src/utils/markd
 
 describe('markdownEscape', () => {
   it('escapeMarkdown escapes legacy Markdown special chars', () => {
-    expect(escapeMarkdown('a_b*c`d[e')).toBe('a\\_b\\*c\\`d\\[e');
+    expect(escapeMarkdown('a\\b_c*d`e[f')).toBe('a\\\\b\\_c\\*d\\`e\\[f');
   });
 
   it('escapeMarkdown handles nullish', () => {

@@ -168,12 +168,32 @@ const getDiscountedPrice = (price, discountPercent) => {
 };
 
 const escapeMarkdown = (value) => {
-  return String(value ?? '').replace(/([_*`\[])/g, '\\$1');
+  return String(value ?? '').replace(/([\\_*`\[])/g, '\\$1');
 };
 
 const isMessageNotModifiedError = (err) => {
   const message = err?.response?.description || err?.description || err?.message || '';
   return String(message).toLowerCase().includes('message is not modified');
+};
+
+const isParseEntityError = (err) => {
+  const message = err?.response?.description || err?.description || err?.message || '';
+  return String(message).toLowerCase().includes("can't parse entities");
+};
+
+const markdownToPlainText = (text) => {
+  return String(text || '')
+    .replace(/\\([\\_*`\[])/g, '$1')
+    .replace(/`/g, '');
+};
+
+const replyMarkdownOrPlain = async (ctx, text, extra = {}) => {
+  try {
+    await ctx.reply(text, { parse_mode: 'Markdown', ...extra });
+  } catch (err) {
+    if (!isParseEntityError(err)) throw err;
+    await ctx.reply(markdownToPlainText(text), extra);
+  }
 };
 
 const REJECT_REASON_PROMPT_MD = '⚠️ *Select rejection reason below:*';
@@ -619,14 +639,14 @@ const registerAdminHandlers = (bot) => {
     if (Date.now() > entry.expiresAt) {
       pendingAdminButtonConfirmations.delete(token);
       await ctx.answerCbQuery('⏱ Confirmation expired', { show_alert: true });
-      try { await ctx.editMessageReplyMarkup({ inline_keyboard: [] }); } catch (_) {}
+      try { await ctx.editMessageReplyMarkup({ inline_keyboard: [] }); } catch (_) { }
       return;
     }
     pendingAdminButtonConfirmations.delete(token);
     await ctx.answerCbQuery('Processing...');
     try {
       await ctx.editMessageReplyMarkup({ inline_keyboard: [] });
-    } catch (_) {}
+    } catch (_) { }
     if (entry.actionType === 'revokeplan') {
       return runRevokePlanConfirmed(ctx, entry.payload);
     }
@@ -648,7 +668,7 @@ const registerAdminHandlers = (bot) => {
     await ctx.answerCbQuery('Cancelled');
     try {
       await ctx.editMessageReplyMarkup({ inline_keyboard: [] });
-    } catch (_) {}
+    } catch (_) { }
   });
 
   // ── /filter <phrase> — reply-based DM trigger/response mapping ────────────
@@ -1195,8 +1215,8 @@ const registerAdminHandlers = (bot) => {
       inlineKeyboard.push(
         plans.slice(index, index + 2).map((plan) => ({
           ...withStyle({
-          text: `${plan.name} (${plan.durationDays}d${plan.price ? ` · ₹${plan.price}` : ''})`,
-          callback_data: `approve_${requestId}_${plan._id}`,
+            text: `${plan.name} (${plan.durationDays}d${plan.price ? ` · ₹${plan.price}` : ''})`,
+            callback_data: `approve_${requestId}_${plan._id}`,
           }, 'success'),
         }))
       );
@@ -1390,7 +1410,7 @@ const registerAdminHandlers = (bot) => {
 
     if (user.referredBy) msg += `\n🤝 Referred by: \`${user.referredBy}\`\n`;
 
-    await ctx.reply(msg, { parse_mode: 'Markdown' });
+    await replyMarkdownOrPlain(ctx, msg);
   });
 
   // ── /diagnose <telegramId> — incident diagnostics snapshot ─────────────────

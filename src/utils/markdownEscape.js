@@ -4,7 +4,7 @@
  */
 
 const escapeMarkdown = (value) => {
-  return String(value ?? '').replace(/([_*`\[])/g, '\\$1');
+  return String(value ?? '').replace(/([\\_*`\[])/g, '\\$1');
 };
 
 /** Safe inside legacy Markdown `inline code` spans. */
