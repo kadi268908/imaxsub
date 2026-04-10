@@ -21,7 +21,7 @@ const Request = require('../models/Request');
 const DailySummary = require('../models/DailySummary');
 const CronLeaderLock = require('../models/CronLeaderLock');
 const { syncUserStatusFromSubscriptions } = require('./subscriptionService');
-const { buildDailySummary } = require('./analyticsService');
+const { buildDailySummary, buildComprehensiveDailyReport } = require('./analyticsService');
 const { safeSend, isGroupMember, banFromGroup, renewalKeyboard } = require('../utils/telegramUtils');
 const { SUPPORT_CONTACT } = require('./supportService');
 const { addDays, formatDate, startOfToday } = require('../utils/dateUtils');
@@ -598,21 +598,86 @@ const membershipMonitor = async (bot) => {
 // Runs daily at 23:59
 // Posts a full activity summary to the log channel
 const dailySummaryJob = async (bot) => {
-  logger.info('[CRON] Running dailySummaryJob...');
+  logger.info('[CRON] Running dailySummaryJob (enhanced comprehensive report)...');
   try {
-    const summary = await buildDailySummary();
-    const today = new Date().toLocaleDateString('en-GB');
+    const report = await buildComprehensiveDailyReport();
+    const dateStamp = report.date;
 
-    await logToChannel(bot,
-      `📊 *Daily Activity Summary — ${today}*\n\n` +
-      `👤 New Users: ${summary.newUsers}\n` +
-      `📩 Requests Received: ${summary.requestsReceived}\n` +
-      `✅ Approvals: ${summary.approvals}\n` +
-      `🔄 Renewals: ${summary.renewals}\n` +
-      `❌ Expired Today: ${summary.expiredToday}\n`
-    );
+    // Format comprehensive report message
+    let reportMessage = `📊 *DAILY REPORT — ${dateStamp}*\n\n`;
 
-    await sendDailyBackupToLogChannel(bot, summary);
+    // Growth metrics
+    reportMessage += `*📈 Growth Metrics:*\n`;
+    reportMessage += `├─ New Users: ${report.growthStats.newToday}\n`;
+    reportMessage += `├─ Total Users: ${report.totalUsers}\n`;
+    reportMessage += `├─ Active Users: ${report.growthStats.active}\n`;
+    reportMessage += `└─ Expired Users: ${report.growthStats.expired}\n\n`;
+
+    // Subscription metrics
+    reportMessage += `*💳 Subscription Stats:*\n`;
+    reportMessage += `├─ Active Subscriptions: ${report.totalActiveSubscriptions}\n`;
+    reportMessage += `├─ Renewals Today: ${report.growthStats.renewalsToday}\n`;
+    reportMessage += `├─ Pending Payments Today: ${report.pendingPaymentsToday}\n`;
+    reportMessage += `└─ Blocked Users: ${report.growthStats.blocked}\n\n`;
+
+    // Request metrics
+    reportMessage += `*📋 Request Analytics:*\n`;
+    reportMessage += `├─ Pending Requests: ${report.totalPendingRequests}\n`;
+    reportMessage += `├─ Rejections Today: ${report.rejectedRequestsToday}\n`;
+    reportMessage += `└─ Approvals Today: 0\n\n`;
+
+    // Category-wise breakdown
+    reportMessage += `*🎬 Category Breakdown:*\n`;
+    report.categoryStats.forEach((cat) => {
+      const label = cat.category === 'movie' ? '🎬 Movie' :
+        cat.category === 'desi' ? '🎭 Desi' :
+          cat.category === 'non_desi' ? '🌍 Non-Desi' : cat.category;
+      reportMessage += `${label}:\n`;
+      reportMessage += `  ├─ Active: ${cat.activeSubscriptions} | Pending: ${cat.pendingRequests}\n`;
+      reportMessage += `  └─ Approved: ${cat.approvalsToday} | Renewed: ${cat.renewalsToday}\n`;
+    });
+
+    reportMessage += `\n*🏆 Top 5 Plans by Active Users:*\n`;
+    report.planPerformance.slice(0, 5).forEach((plan, idx) => {
+      reportMessage += `${idx + 1}. ${plan.planName} (${plan.durationDays}d): ${plan.count} users\n`;
+    });
+
+    // New users who joined today
+    if (report.newUsersToday && report.newUsersToday.length > 0) {
+      reportMessage += `\n*👥 New Users Joined Today (${report.newUsersToday.length}):*\n`;
+      report.newUsersToday.forEach((user, idx) => {
+        const name = user.name ? user.name.substring(0, 25) : 'N/A';
+        const username = user.username ? `@${user.username}` : 'No username';
+        const status = user.status || 'inactive';
+        const joinTime = user.joinDate ? new Date(user.joinDate).toLocaleTimeString('en-GB', { timeZone: 'Asia/Kolkata' }) : 'N/A';
+
+        // Format categories
+        let categoryDisplay = 'No category';
+        if (user.categories && user.categories.length > 0) {
+          const categoryLabels = user.categories.map(cat => {
+            if (cat === 'movie') return '🎬 Movie';
+            if (cat === 'desi') return '🎭 Desi';
+            if (cat === 'non_desi') return '🌍 Non-Desi';
+            return cat;
+          });
+          categoryDisplay = categoryLabels.join(' | ');
+        }
+
+        reportMessage += `${idx + 1}. ID: ${user.telegramId} | ${name} ${username}\n   Status: ${status} | Category: ${categoryDisplay}\n   Joined: ${joinTime}\n`;
+      });
+    } else {
+      reportMessage += `\n*👥 New Users Joined Today: 0*\n`;
+    }
+
+    reportMessage += `\n⏰ Report generated at ${new Date().toLocaleString('en-GB', { timeZone: 'Asia/Kolkata' })} IST`;
+
+    // Send comprehensive report to log channel
+    await logToChannel(bot, reportMessage);
+
+    // Also send the detailed backup JSON
+    await sendDailyBackupToLogChannel(bot, report);
+
+    logger.info('Enhanced daily report with new users list sent to log channel');
   } catch (err) {
     logger.error(`dailySummaryJob error: ${err.message}`);
   }

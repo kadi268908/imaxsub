@@ -191,10 +191,81 @@ const incrementSummaryField = async (field, amount = 1) => {
   );
 };
 
+/**
+ * Build comprehensive daily report with all key metrics (for 11:59 PM report)
+ */
+const buildComprehensiveDailyReport = async () => {
+  const today = startOfToday();
+  const todayEnd = endOfToday();
+  const now = new Date();
+
+  const [
+    growthStats,
+    categoryStats,
+    planPerformance,
+    totalUsers,
+    totalActiveSubscriptions,
+    totalPendingRequests,
+    rejectedRequests,
+    pendingPayments,
+    newUsersList,
+  ] = await Promise.all([
+    getGrowthStats(),
+    getCategoryWiseStats(),
+    getPlanPerformance(),
+    User.countDocuments({ role: 'user' }),
+    Subscription.countDocuments({ status: 'active', expiryDate: { $gt: now } }),
+    Request.countDocuments({ status: 'pending' }),
+    Request.countDocuments({ status: 'rejected', actionDate: { $gte: today, $lte: todayEnd } }),
+    Subscription.countDocuments({ status: 'pending_payment', createdAt: { $gte: today, $lte: todayEnd } }),
+    User.find({
+      role: 'user',
+      joinDate: { $gte: today, $lte: todayEnd }
+    })
+      .select('telegramId name username status joinDate')
+      .sort({ joinDate: 1 })
+      .lean(),
+  ]);
+
+  // Enrich new users with their subscription/request categories
+  const newUsersToday = await Promise.all(
+    newUsersList.map(async (user) => {
+      const [subscriptions, requests] = await Promise.all([
+        Subscription.find({ telegramId: user.telegramId }).select('planCategory').lean(),
+        Request.find({ telegramId: user.telegramId }).select('requestCategory').lean(),
+      ]);
+
+      const categories = new Set();
+      subscriptions.forEach(s => s.planCategory && categories.add(s.planCategory));
+      requests.forEach(r => r.requestCategory && categories.add(r.requestCategory));
+
+      return {
+        ...user,
+        categories: Array.from(categories).sort(),
+      };
+    })
+  );
+
+  return {
+    generatedAt: new Date().toISOString(),
+    date: today.toISOString().slice(0, 10),
+    growthStats,
+    categoryStats,
+    planPerformance,
+    totalUsers,
+    totalActiveSubscriptions,
+    totalPendingRequests,
+    rejectedRequestsToday: rejectedRequests,
+    pendingPaymentsToday: pendingPayments,
+    newUsersToday,
+  };
+};
+
 module.exports = {
   getGrowthStats,
   getCategoryWiseStats,
   getPlanPerformance,
   buildDailySummary,
   incrementSummaryField,
+  buildComprehensiveDailyReport,
 };
