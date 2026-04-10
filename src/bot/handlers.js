@@ -798,6 +798,8 @@ const registerUserHandlers = (bot) => {
     const safeUsername = user.username ? `@${escapeMarkdown(user.username)}` : 'N/A';
     const referredByUser = user.referredBy || null;
     const referredBySeller = user.sellerReferredBy || null;
+    const safeReferredByUser = escapeMarkdownInlineCode(referredByUser || 'N/A');
+    const safeReferredBySeller = escapeMarkdownInlineCode(referredBySeller || 'N/A');
 
     const logCaption =
       `🆕 *New Premium Access Request*\n\n` +
@@ -805,8 +807,8 @@ const registerUserHandlers = (bot) => {
       `👤 Name: ${safeName}\n` +
       `🆔 User ID: \`${ctx.from.id}\`\n` +
       `📛 Username: ${safeUsername}\n` +
-      `🤝 Referred By (User): \`${referredByUser || 'N/A'}\`\n` +
-      `🛍 Referred By (Seller): \`${referredBySeller || 'N/A'}\`\n` +
+      `🤝 Referred By (User): \`${safeReferredByUser}\`\n` +
+      `🛍 Referred By (Seller): \`${safeReferredBySeller}\`\n` +
       (isSelectedPlanValid
         ? `📋 Selected Plan: *${escapeMarkdown(selectedPlan.name)}* (${selectedPlan.durationDays} days${selectedPlan.price ? ` · ₹${formatInr(selectedPlan.price)}` : ''})\n`
         : '') +

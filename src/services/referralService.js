@@ -8,6 +8,7 @@ const AdminLog = require('../models/AdminLog');
 const SellerWithdrawalRequest = require('../models/SellerWithdrawalRequest');
 const SellerPayoutLedger = require('../models/SellerPayoutLedger');
 const logger = require('../utils/logger');
+const { escapeMarkdown } = require('../utils/markdownEscape');
 
 const REFERRAL_REWARD_DISCOUNT_PERCENT = Math.min(100, Math.max(0, parseFloat(process.env.REFERRAL_REWARD_DISCOUNT_PERCENT || '10')));
 const SELLER_COMMISSION_PERCENT = parseFloat(process.env.SELLER_COMMISSION_PERCENT || '15');
@@ -122,9 +123,10 @@ const awardReferralBonus = async (bot, newSubscriberTelegramId) => {
       });
 
       try {
+        const safeReferredUserName = escapeMarkdown(newUser.name || 'User');
         await bot.telegram.sendMessage(
           referrer.telegramId,
-          `🎁 *Referral Reward Unlocked!*\n\nYour referral *${newUser.name}* just subscribed!\n` +
+          `🎁 *Referral Reward Unlocked!*\n\nYour referral *${safeReferredUserName}* just subscribed!\n` +
           `You earned *${REFERRAL_REWARD_DISCOUNT_PERCENT}% OFF* on your next premium purchase/renewal. 🎉`,
           { parse_mode: 'Markdown' }
         );
@@ -242,10 +244,11 @@ const awardSellerCommission = async (bot, newSubscriberTelegramId, saleValue = 0
     await User.findByIdAndUpdate(newUser._id, { sellerCommissionApplied: true });
 
     try {
+      const safeReferredUserName = escapeMarkdown(newUser.name || 'User');
       await bot.telegram.sendMessage(
         seller.telegramId,
         `💰 *Seller Commission Credited!*\n\n` +
-        `Referral: *${newUser.name}*\n` +
+        `Referral: *${safeReferredUserName}*\n` +
         `Sale Value: *₹${numericSale.toFixed(2)}*\n` +
         `Commission (${SELLER_COMMISSION_PERCENT}%): *₹${commission.toFixed(2)}*\n\n` +
         `Use /seller to view your seller dashboard.`,

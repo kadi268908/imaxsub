@@ -1146,7 +1146,7 @@ const registerAdminHandlers = (bot) => {
           ? `Price: ₹${Number(plan.price || 0).toFixed(2)} -> ₹${payableAmount.toFixed(2)} (${appliedDiscountPercent}% OFF${appliedOffer?.title ? `, ${appliedOffer.title}` : ''})\n`
           : '') +
         `Expires: ${formatDate(maxExpiry)}\n` +
-        `By: ${ctx.from.username ? '@' + ctx.from.username : ctx.from.id}`
+        `By: ${ctx.from.username ? '@' + escapeMarkdown(ctx.from.username) : escapeMarkdown(String(ctx.from.id))}`
       );
 
       await AdminLog.create({
@@ -1338,7 +1338,7 @@ const registerAdminHandlers = (bot) => {
         bot,
         `❌ *Request Rejected*\nUser: \`${request.telegramId}\`\n` +
         `Reason: *${escapeMarkdown(reasonLabel)}*\n` +
-        `By: ${ctx.from.username ? '@' + ctx.from.username : ctx.from.id}`
+        `By: ${ctx.from.username ? '@' + escapeMarkdown(ctx.from.username) : escapeMarkdown(String(ctx.from.id))}`
       );
 
       await AdminLog.create({

@@ -1429,8 +1429,10 @@ const registerSuperAdminHandlers = (bot) => {
       referralCounts.forEach((item, index) => {
         const userId = Number(item._id);
         const user = referrerMap.get(userId);
+        const safeUserName = escapeMarkdown(user?.name || 'N/A');
+        const safeUserUsername = user?.username ? ` (@${escapeMarkdown(user.username)})` : '';
         msg += `${index + 1}. User ID: \`${userId}\`\n`;
-        msg += `   Name: ${user?.name || 'N/A'}${user?.username ? ` (@${user.username})` : ''}\n`;
+        msg += `   Name: ${safeUserName}${safeUserUsername}\n`;
         msg += `   Referrals: *${Number(item.referralCount || 0)}*\n\n`;
       });
 
@@ -1607,7 +1609,7 @@ const registerSuperAdminHandlers = (bot) => {
         bot,
         `⛔ *Seller Revoked*\n` +
         `User: \`${targetId}\`\n` +
-        `By: ${ctx.from.username ? '@' + ctx.from.username : ctx.from.id}` +
+        `By: ${ctx.from.username ? '@' + escapeMarkdown(ctx.from.username) : escapeMarkdown(String(ctx.from.id))}` +
         (rejectedPendingCount > 0 ? `\nPending WD Rejected: ${rejectedPendingCount}` : '') +
         `${previousSellerCode ? `\nPrevious Code: \`${previousSellerCode}\`` : ''}`
       );
