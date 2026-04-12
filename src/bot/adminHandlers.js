@@ -1133,17 +1133,21 @@ const registerAdminHandlers = (bot) => {
 
       await applyApprovalTransformToLogMessage(ctx, { planName: plan.name, allRenewal });
 
+      const resolvedCategoryLabel = getCategoryShortLabel(resolvedPlanCategory);
+      const safePlanNameForLog = escapeMarkdown(String(plan.name || 'Plan'));
+      const safeOfferTitleForLog = appliedOffer?.title ? escapeMarkdown(appliedOffer.title) : null;
+
       await logToChannel(bot,
         `✅ *Subscription ${allRenewal ? 'Renewed' : 'Approved'}*\n` +
         `User: \`${request.telegramId}\`\n` +
-        `Category: ${resolvedPlanCategory}\n` +
+        `Category: ${escapeMarkdown(resolvedCategoryLabel)}\n` +
         `Group(s): ${subscriptions.map((item) => `\`${item.groupId}\``).join(', ')}\n` +
         (alreadyInGroupCategories.length > 0
-          ? `Invite: skipped (already in premium group) for ${alreadyInGroupCategories.map((category) => getCategoryShortLabel(category)).join(', ')}\n`
+          ? `Invite: skipped (already in premium group) for ${alreadyInGroupCategories.map((category) => escapeMarkdown(getCategoryShortLabel(category))).join(', ')}\n`
           : '') +
-        `Plan: ${plan.name} (${plan.durationDays}d)\n` +
+        `Plan: ${safePlanNameForLog} (${plan.durationDays}d)\n` +
         (Number(plan.price || 0) > 0 && appliedDiscountPercent > 0
-          ? `Price: ₹${Number(plan.price || 0).toFixed(2)} -> ₹${payableAmount.toFixed(2)} (${appliedDiscountPercent}% OFF${appliedOffer?.title ? `, ${appliedOffer.title}` : ''})\n`
+          ? `Price: ₹${Number(plan.price || 0).toFixed(2)} -> ₹${payableAmount.toFixed(2)} (${appliedDiscountPercent}% OFF${safeOfferTitleForLog ? `, ${safeOfferTitleForLog}` : ''})\n`
           : '') +
         `Expires: ${formatDate(maxExpiry)}\n` +
         `By: ${ctx.from.username ? '@' + escapeMarkdown(ctx.from.username) : escapeMarkdown(String(ctx.from.id))}`

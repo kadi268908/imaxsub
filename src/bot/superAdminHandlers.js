@@ -1983,7 +1983,8 @@ const buildCategoryWiseSalesReportMessages = (title, rows, maxLength = 3500) => 
   });
 
   rows.forEach((row) => {
-    const key = categoryOrder.includes(row.planCategory) ? row.planCategory : 'movie';
+    const normalizedCategory = normalizePlanCategory(row.planCategory || 'movie');
+    const key = categoryOrder.includes(normalizedCategory) ? normalizedCategory : 'movie';
     grouped[key].push(row);
   });
 
