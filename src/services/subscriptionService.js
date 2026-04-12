@@ -194,6 +194,7 @@ const getSalesReport = async (startDate, endDate) => {
           reqTelegramId: '$telegramId',
           reqPlanId: '$selectedPlanId',
           reqCategory: '$requestCategory',
+          reqActionDate: '$actionDate',
         },
         pipeline: [
           {
@@ -204,6 +205,7 @@ const getSalesReport = async (startDate, endDate) => {
                   { $eq: ['$planId', '$$reqPlanId'] },
                   { $eq: ['$planCategory', '$$reqCategory'] },
                   { $eq: ['$status', 'cancelled'] },
+                  { $gte: ['$updatedAt', '$$reqActionDate'] },
                 ],
               },
             },
@@ -285,6 +287,7 @@ const getSalesUserBreakdown = async (startDate, endDate) => {
           reqTelegramId: '$telegramId',
           reqPlanId: '$selectedPlanId',
           reqCategory: '$requestCategory',
+          reqActionDate: '$actionDate',
         },
         pipeline: [
           {
@@ -295,6 +298,7 @@ const getSalesUserBreakdown = async (startDate, endDate) => {
                   { $eq: ['$planId', '$$reqPlanId'] },
                   { $eq: ['$planCategory', '$$reqCategory'] },
                   { $eq: ['$status', 'cancelled'] },
+                  { $gte: ['$updatedAt', '$$reqActionDate'] },
                 ],
               },
             },
