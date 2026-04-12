@@ -1769,6 +1769,146 @@ const registerAdminHandlers = (bot) => {
     }
   });
 
+  // ── /activate <telegramId>|<planId> — manual activation + invite link ────
+  bot.command('activate', requireAdmin, async (ctx) => {
+    try {
+      const raw = String(ctx.message?.text || '').replace(/^\/activate(@\w+)?\s*/i, '').trim();
+      const [idPart, planPart] = raw.split('|').map((s) => String(s || '').trim());
+
+      if (!idPart || !planPart) {
+        return ctx.reply('Usage: /activate <telegramId>|<planId>');
+      }
+
+      const targetId = parseInt(idPart, 10);
+      if (!targetId) {
+        return ctx.reply('❌ Invalid telegramId. Usage: /activate <telegramId>|<planId>');
+      }
+
+      const plan = await Plan.findById(planPart);
+      if (!plan) {
+        return ctx.reply('❌ Plan not found. Use /plans to check available plan IDs.');
+      }
+
+      const planCategory = normalizePlanCategory(plan.category || 'movie');
+      const premiumGroupId = getGroupIdForCategory(planCategory);
+      if (!premiumGroupId) {
+        return ctx.reply(`❌ Premium group not configured for category: ${planCategory}`);
+      }
+
+      let targetUser = await User.findOne({ telegramId: targetId });
+      const userExisted = Boolean(targetUser);
+      if (!targetUser) {
+        targetUser = await User.create({
+          telegramId: targetId,
+          name: `User ${targetId}`,
+          username: null,
+          role: 'user',
+          status: 'inactive',
+        });
+      }
+
+      const subscription = await createSubscription(targetId, plan, ctx.from.id, {
+        planCategory,
+        premiumGroupId,
+      });
+
+      const alreadyInGroup = await isGroupMember(bot, premiumGroupId, targetId);
+      let inviteLink = null;
+
+      if (!alreadyInGroup) {
+        await unbanFromGroup(bot, premiumGroupId, targetId);
+        await revokeSubscriptionInviteLink(bot, subscription);
+        inviteLink = await generateInviteLink(bot, premiumGroupId, targetId, subscription.expiryDate);
+
+        if (!inviteLink) {
+          return ctx.reply('❌ Subscription activated, but failed to generate invite link. Check bot group admin permissions.');
+        }
+
+        await Subscription.findByIdAndUpdate(subscription._id, {
+          inviteLink,
+          inviteLinkIssuedAt: new Date(),
+          inviteLinkTtlMinutes: Math.max(1, parseInt(process.env.INVITE_LINK_TTL_MINUTES || '10', 10)),
+        });
+      }
+
+      if (inviteLink) {
+        await safeSend(
+          bot,
+          targetId,
+          `🎉 *Access Approved!*\n\n` +
+          `📋 Plan: *${escapeMarkdown(plan.name)}*\n` +
+          `📅 Valid for: *${plan.durationDays} days*\n` +
+          `⏰ Expires on: *${formatDate(subscription.expiryDate)}*\n\n` +
+          `🔗 Join premium group using the button below.\n` +
+          `⏳ Link is single-use and time-limited.`,
+          {
+            parse_mode: 'Markdown',
+            reply_markup: {
+              inline_keyboard: [[{ text: '🔗 Join Premium Group', url: inviteLink, style: 'success' }]],
+            },
+          }
+        );
+      } else {
+        await safeSend(
+          bot,
+          targetId,
+          `✅ *Subscription Activated*\n\n` +
+          `📋 Plan: *${escapeMarkdown(plan.name)}*\n` +
+          `⏰ Expires on: *${formatDate(subscription.expiryDate)}*\n\n` +
+          `Aap already premium group me ho. Invite link send nahi kiya gaya.`,
+          {
+            parse_mode: 'Markdown',
+            reply_markup: {
+              inline_keyboard: [[{ text: '🎫 Support Chat', url: SUPPORT_CONTACT_URL, style: 'primary' }]],
+            },
+          }
+        );
+      }
+
+      await AdminLog.create({
+        adminId: ctx.from.id,
+        actionType: 'manual_activate',
+        targetUserId: targetId,
+        details: {
+          subscriptionId: subscription._id,
+          category: planCategory,
+          planId: plan._id,
+          planName: plan.name,
+          durationDays: plan.durationDays,
+          premiumGroupId,
+          expiryDate: subscription.expiryDate,
+          isRenewal: Boolean(subscription.isRenewal),
+          inviteSent: Boolean(inviteLink),
+          autoCreatedUser: !userExisted,
+        },
+      });
+
+      await logToChannel(
+        bot,
+        `✅ *Manual Plan Activated*\n` +
+        `User: \`${targetId}\`\n` +
+        `Category: ${escapeMarkdown(getCategoryShortLabel(planCategory))}\n` +
+        `Group: \`${premiumGroupId}\`\n` +
+        `Plan: ${escapeMarkdown(plan.name)} (${plan.durationDays}d)\n` +
+        `Expires: ${formatDate(subscription.expiryDate)}\n` +
+        `Invite: ${inviteLink ? 'sent' : 'skipped (already in group)'}\n` +
+        `By: ${ctx.from.username ? '@' + escapeMarkdown(ctx.from.username) : escapeMarkdown(String(ctx.from.id))}`
+      );
+
+      await ctx.reply(
+        `✅ Plan activated for user \`${targetId}\`.\n` +
+        `Category: *${escapeMarkdown(getCategoryShortLabel(planCategory))}*\n` +
+        `Plan: *${escapeMarkdown(plan.name)}* (${plan.durationDays}d)\n` +
+        `Expires: *${formatDate(subscription.expiryDate)}*\n` +
+        `Invite: *${inviteLink ? 'Sent' : 'Skipped (already in group)'}*`,
+        { parse_mode: 'Markdown' }
+      );
+    } catch (err) {
+      logger.error(`activate command error: ${err.message}`);
+      await ctx.reply('❌ Failed to activate plan. Please try again.');
+    }
+  });
+
   // ── /revokeplan <telegramId> [category] — terminate specific plan ─────────
   bot.command('revokeplan', requireAdmin, async (ctx) => {
     try {
