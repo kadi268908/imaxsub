@@ -1812,6 +1812,17 @@ const registerAdminHandlers = (bot) => {
         premiumGroupId,
       });
 
+      const manualRequest = await Request.create({
+        userId: targetUser._id,
+        telegramId: targetId,
+        status: 'approved',
+        requestDate: new Date(),
+        actionDate: new Date(),
+        actionBy: ctx.from.id,
+        selectedPlanId: plan._id,
+        requestCategory: planCategory,
+      });
+
       const alreadyInGroup = await isGroupMember(bot, premiumGroupId, targetId);
       let inviteLink = null;
 
@@ -1871,6 +1882,7 @@ const registerAdminHandlers = (bot) => {
         targetUserId: targetId,
         details: {
           subscriptionId: subscription._id,
+          requestId: manualRequest._id,
           category: planCategory,
           planId: plan._id,
           planName: plan.name,
