@@ -27,6 +27,8 @@ const ADMIN_ACTION_CONFIRM_TTL_SECONDS = Math.max(10, parseInt(process.env.ADMIN
 /** @type Map<string, { actionType: string, adminTelegramId: number, expiresAt: number, payload: object }> */
 const pendingAdminButtonConfirmations = new Map();
 const approvalRequestLocks = new Set();
+const activeBulkInviteRuns = new Set();
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, Math.max(0, Number(ms) || 0)));
 const withStyle = (button, style) => ({ ...button, style });
 
 const getCategoryShortLabel = (category) => {
@@ -2163,140 +2165,181 @@ const registerAdminHandlers = (bot) => {
           return ctx.reply('❌ Invalid category. Use movie, desi, or non_desi.');
         }
 
-        const now = new Date();
-        const activeSubsRaw = await Subscription.find({
-          status: 'active',
-          expiryDate: { $gt: now },
-          planCategory: normalizedCategory,
-        })
-          .sort({ telegramId: 1, expiryDate: -1, createdAt: -1 });
-
-        if (!activeSubsRaw.length) {
+        const bulkRunKey = `${ctx.from.id}:${normalizedCategory}`;
+        if (activeBulkInviteRuns.has(bulkRunKey)) {
           return ctx.reply(
-            `ℹ️ No active subscriptions found for category *${normalizedCategory}*.`,
+            `⏳ A bulk invite run is already in progress for *${normalizedCategory}*. Please wait for completion.`,
             { parse_mode: 'Markdown' }
           );
         }
 
-        const latestSubByTelegramId = new Map();
-        for (const sub of activeSubsRaw) {
-          const key = String(sub.telegramId);
-          if (!latestSubByTelegramId.has(key)) {
-            latestSubByTelegramId.set(key, sub);
-          }
-        }
+        activeBulkInviteRuns.add(bulkRunKey);
+        const adminId = ctx.from.id;
 
-        const candidateTelegramIds = [...latestSubByTelegramId.keys()].map((id) => Number(id));
-        const activeUsers = await User.find({
-          telegramId: { $in: candidateTelegramIds },
-          role: 'user',
-          status: 'active',
-          isBlocked: { $ne: true },
-        }).select('telegramId').lean();
-
-        const activeUserIdSet = new Set(activeUsers.map((user) => String(user.telegramId)));
-        const eligibleSubs = [...latestSubByTelegramId.values()]
-          .filter((sub) => activeUserIdSet.has(String(sub.telegramId)));
-
-        let alreadyInGroupCount = 0;
-        let noGroupMappingCount = 0;
-        let inviteSentCount = 0;
-        let inviteGeneratedDmFailedCount = 0;
-        let failedCount = 0;
-
-        for (const sub of eligibleSubs) {
-          const userTelegramId = Number(sub.telegramId);
-          const inviteGroupId = getSubscriptionGroupId(sub);
-          if (!inviteGroupId) {
-            noGroupMappingCount += 1;
-            continue;
-          }
-
+        void (async () => {
           try {
-            const alreadyInGroup = await isGroupMember(bot, inviteGroupId, userTelegramId);
-            if (alreadyInGroup) {
-              alreadyInGroupCount += 1;
-              continue;
+            const now = new Date();
+            const activeSubsRaw = await Subscription.find({
+              status: 'active',
+              expiryDate: { $gt: now },
+              planCategory: normalizedCategory,
+            })
+              .sort({ telegramId: 1, expiryDate: -1, createdAt: -1 });
+
+            if (!activeSubsRaw.length) {
+              await safeSend(
+                bot,
+                adminId,
+                `ℹ️ No active subscriptions found for category *${normalizedCategory}*.`,
+                { parse_mode: 'Markdown' }
+              );
+              return;
             }
 
-            await unbanFromGroup(bot, inviteGroupId, userTelegramId);
-            await revokeSubscriptionInviteLink(bot, sub);
-            const inviteLink = await generateInviteLink(bot, inviteGroupId, userTelegramId, sub.expiryDate);
-            if (!inviteLink) {
-              failedCount += 1;
-              continue;
+            const latestSubByTelegramId = new Map();
+            for (const sub of activeSubsRaw) {
+              const key = String(sub.telegramId);
+              if (!latestSubByTelegramId.has(key)) {
+                latestSubByTelegramId.set(key, sub);
+              }
             }
 
-            await Subscription.findByIdAndUpdate(sub._id, {
-              inviteLink,
-              inviteLinkIssuedAt: new Date(),
-              inviteLinkTtlMinutes: Math.max(1, parseInt(process.env.INVITE_LINK_TTL_MINUTES || '10', 10)),
+            const candidateTelegramIds = [...latestSubByTelegramId.keys()].map((id) => Number(id));
+            const activeUsers = await User.find({
+              telegramId: { $in: candidateTelegramIds },
+              role: 'user',
+              status: 'active',
+              isBlocked: { $ne: true },
+            }).select('telegramId').lean();
+
+            const activeUserIdSet = new Set(activeUsers.map((user) => String(user.telegramId)));
+            const eligibleSubs = [...latestSubByTelegramId.values()]
+              .filter((sub) => activeUserIdSet.has(String(sub.telegramId)));
+
+            let alreadyInGroupCount = 0;
+            let noGroupMappingCount = 0;
+            let inviteSentCount = 0;
+            let inviteGeneratedDmFailedCount = 0;
+            let failedCount = 0;
+
+            const perUserDelayMs = Math.max(250, parseInt(process.env.BULK_INVITE_DELAY_MS || '600', 10));
+            for (const sub of eligibleSubs) {
+              const userTelegramId = Number(sub.telegramId);
+              const inviteGroupId = getSubscriptionGroupId(sub);
+              if (!inviteGroupId) {
+                noGroupMappingCount += 1;
+                continue;
+              }
+
+              try {
+                const alreadyInGroup = await isGroupMember(bot, inviteGroupId, userTelegramId);
+                if (alreadyInGroup) {
+                  alreadyInGroupCount += 1;
+                  continue;
+                }
+
+                await unbanFromGroup(bot, inviteGroupId, userTelegramId);
+                await revokeSubscriptionInviteLink(bot, sub);
+                const inviteLink = await generateInviteLink(bot, inviteGroupId, userTelegramId, sub.expiryDate);
+                if (!inviteLink) {
+                  failedCount += 1;
+                  await sleep(perUserDelayMs);
+                  continue;
+                }
+
+                await Subscription.findByIdAndUpdate(sub._id, {
+                  inviteLink,
+                  inviteLinkIssuedAt: new Date(),
+                  inviteLinkTtlMinutes: Math.max(1, parseInt(process.env.INVITE_LINK_TTL_MINUTES || '10', 10)),
+                });
+
+                const delivered = await safeSend(
+                  bot,
+                  userTelegramId,
+                  `🔗 *New Invite Link Generated*\n\n` +
+                  `Aapka naya joining link ready hai. Niche button pe click karke group join karein.\n\n` +
+                  `⏰ Link limited-time aur single-use hai.`,
+                  {
+                    parse_mode: 'Markdown',
+                    reply_markup: {
+                      inline_keyboard: [[{ text: '🔗 Join Premium Group', url: inviteLink, style: 'success' }]],
+                    },
+                  }
+                );
+
+                if (delivered) {
+                  inviteSentCount += 1;
+                } else {
+                  inviteGeneratedDmFailedCount += 1;
+                }
+              } catch (_) {
+                failedCount += 1;
+              }
+
+              await sleep(perUserDelayMs);
+            }
+
+            await AdminLog.create({
+              adminId,
+              actionType: 'resend_invite',
+              details: {
+                command: 'invite_all',
+                category: normalizedCategory,
+                totalActiveSubscriptionsInCategory: activeSubsRaw.length,
+                eligibleActiveUsers: eligibleSubs.length,
+                inviteSentCount,
+                inviteGeneratedDmFailedCount,
+                alreadyInGroupCount,
+                noGroupMappingCount,
+                failedCount,
+                perUserDelayMs,
+              },
             });
 
-            const delivered = await safeSend(
+            const nowText = new Date();
+            await logToChannel(
               bot,
-              userTelegramId,
-              `🔗 *New Invite Link Generated*\n\n` +
-              `Aapka naya joining link ready hai. Niche button pe click karke group join karein.\n\n` +
-              `⏰ Link limited-time aur single-use hai.`,
-              {
-                parse_mode: 'Markdown',
-                reply_markup: {
-                  inline_keyboard: [[{ text: '🔗 Join Premium Group', url: inviteLink, style: 'success' }]],
-                },
-              }
+              `📨 *Bulk Invite Run*\n` +
+              `By Admin Id: \`${adminId}\`\n` +
+              `Category: *${normalizedCategory}*\n` +
+              `Eligible active users: *${eligibleSubs.length}*\n` +
+              `Invite sent: *${inviteSentCount}*\n` +
+              `Invite generated but DM failed: *${inviteGeneratedDmFailedCount}*\n` +
+              `Already in group: *${alreadyInGroupCount}*\n` +
+              `No group mapping: *${noGroupMappingCount}*\n` +
+              `Failed: *${failedCount}*\n` +
+              `Date: ${nowText.toLocaleDateString('en-GB')}\n` +
+              `Time: ${nowText.toLocaleTimeString('en-IN')}`
             );
 
-            if (delivered) {
-              inviteSentCount += 1;
-            } else {
-              inviteGeneratedDmFailedCount += 1;
-            }
-          } catch (_) {
-            failedCount += 1;
+            await safeSend(
+              bot,
+              adminId,
+              `✅ Bulk invite completed for *${normalizedCategory}*.\n\n` +
+              `Eligible active users: *${eligibleSubs.length}*\n` +
+              `Invite sent: *${inviteSentCount}*\n` +
+              `Invite generated but DM failed: *${inviteGeneratedDmFailedCount}*\n` +
+              `Already in group: *${alreadyInGroupCount}*\n` +
+              `No group mapping: *${noGroupMappingCount}*\n` +
+              `Failed: *${failedCount}*`,
+              { parse_mode: 'Markdown' }
+            );
+          } catch (bulkErr) {
+            logger.error(`invite all command error: ${bulkErr.message}`);
+            await safeSend(
+              bot,
+              adminId,
+              `❌ Bulk invite failed for *${normalizedCategory}*.\nError: ${escapeMarkdown(bulkErr.message || 'unknown')}`,
+              { parse_mode: 'Markdown' }
+            );
+          } finally {
+            activeBulkInviteRuns.delete(bulkRunKey);
           }
-        }
-
-        await AdminLog.create({
-          adminId: ctx.from.id,
-          actionType: 'resend_invite',
-          details: {
-            command: 'invite_all',
-            category: normalizedCategory,
-            totalActiveSubscriptionsInCategory: activeSubsRaw.length,
-            eligibleActiveUsers: eligibleSubs.length,
-            inviteSentCount,
-            inviteGeneratedDmFailedCount,
-            alreadyInGroupCount,
-            noGroupMappingCount,
-            failedCount,
-          },
-        });
-
-        const nowText = new Date();
-        await logToChannel(
-          bot,
-          `📨 *Bulk Invite Run*\n` +
-          `By Admin Id: \`${ctx.from.id}\`\n` +
-          `Category: *${normalizedCategory}*\n` +
-          `Eligible active users: *${eligibleSubs.length}*\n` +
-          `Invite sent: *${inviteSentCount}*\n` +
-          `Invite generated but DM failed: *${inviteGeneratedDmFailedCount}*\n` +
-          `Already in group: *${alreadyInGroupCount}*\n` +
-          `No group mapping: *${noGroupMappingCount}*\n` +
-          `Failed: *${failedCount}*\n` +
-          `Date: ${nowText.toLocaleDateString('en-GB')}\n` +
-          `Time: ${nowText.toLocaleTimeString('en-IN')}`
-        );
+        })();
 
         return ctx.reply(
-          `✅ Bulk invite completed for *${normalizedCategory}*.\n\n` +
-          `Eligible active users: *${eligibleSubs.length}*\n` +
-          `Invite sent: *${inviteSentCount}*\n` +
-          `Invite generated but DM failed: *${inviteGeneratedDmFailedCount}*\n` +
-          `Already in group: *${alreadyInGroupCount}*\n` +
-          `No group mapping: *${noGroupMappingCount}*\n` +
-          `Failed: *${failedCount}*`,
+          `🚀 Bulk invite started for *${normalizedCategory}* in background.\n` +
+          `You will receive the completion summary in DM.`,
           { parse_mode: 'Markdown' }
         );
       }

@@ -4,6 +4,16 @@
 const logger = require('../utils/logger');
 const DELETE_DELAY_MINUTES = Math.max(0, parseInt(process.env.MESSAGE_DELETE_DELAY_MINUTES || '30', 10));
 const MAX_TIMEOUT_MS = 2147483647;
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, Math.max(0, Number(ms) || 0)));
+
+const getRetryAfterSeconds = (err) => {
+  const fromParams = Number(err?.parameters?.retry_after || err?.response?.parameters?.retry_after || 0);
+  if (Number.isFinite(fromParams) && fromParams > 0) return fromParams;
+
+  const message = String(err?.description || err?.response?.description || err?.message || '');
+  const parsed = message.match(/retry after\s+(\d+)/i);
+  return parsed ? Number(parsed[1]) : 0;
+};
 
 /**
  * Safely send a message to a user.
@@ -81,30 +91,47 @@ const handleBlockedUser = async (_bot, telegramId) => {
  * If maxValidTill is provided, link expiry won't exceed that date.
  */
 const generateInviteLink = async (bot, groupId, userId, maxValidTill = null) => {
-  try {
-    const ttlMinutes = Math.max(1, parseInt(process.env.INVITE_LINK_TTL_MINUTES || '10', 10));
-    const nowUnix = Math.floor(Date.now() / 1000);
-    const ttlExpiryUnix = nowUnix + (ttlMinutes * 60);
+  const maxAttempts = Math.max(1, parseInt(process.env.INVITE_LINK_RETRY_ATTEMPTS || '3', 10));
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    try {
+      const ttlMinutes = Math.max(1, parseInt(process.env.INVITE_LINK_TTL_MINUTES || '10', 10));
+      const nowUnix = Math.floor(Date.now() / 1000);
+      const ttlExpiryUnix = nowUnix + (ttlMinutes * 60);
 
-    let expireDateUnix = ttlExpiryUnix;
-    if (maxValidTill) {
-      const maxValidUnix = Math.floor(new Date(maxValidTill).getTime() / 1000);
-      if (!Number.isNaN(maxValidUnix) && maxValidUnix > nowUnix) {
-        expireDateUnix = Math.min(ttlExpiryUnix, maxValidUnix);
+      let expireDateUnix = ttlExpiryUnix;
+      if (maxValidTill) {
+        const maxValidUnix = Math.floor(new Date(maxValidTill).getTime() / 1000);
+        if (!Number.isNaN(maxValidUnix) && maxValidUnix > nowUnix) {
+          expireDateUnix = Math.min(ttlExpiryUnix, maxValidUnix);
+        }
       }
-    }
 
-    const invite = await bot.telegram.createChatInviteLink(groupId, {
-      name: `User_${userId}`,
-      member_limit: 1,
-      expire_date: expireDateUnix,
-      creates_join_request: false,
-    });
-    return invite.invite_link;
-  } catch (err) {
-    logger.error(`generateInviteLink error for user ${userId}: ${err.message}`);
-    return null;
+      const invite = await bot.telegram.createChatInviteLink(groupId, {
+        name: `User_${userId}`,
+        member_limit: 1,
+        expire_date: expireDateUnix,
+        creates_join_request: false,
+      });
+      return invite.invite_link;
+    } catch (err) {
+      const retryAfterSeconds = getRetryAfterSeconds(err);
+      const isFloodError = Number(retryAfterSeconds) > 0;
+      const shouldRetry = isFloodError && attempt < maxAttempts;
+
+      if (shouldRetry) {
+        const waitSeconds = Math.min(60, Math.max(1, retryAfterSeconds + 1));
+        logger.warn(
+          `generateInviteLink flood-control for user ${userId}; retrying in ${waitSeconds}s (attempt ${attempt}/${maxAttempts})`
+        );
+        await sleep(waitSeconds * 1000);
+        continue;
+      }
+
+      logger.error(`generateInviteLink error for user ${userId}: ${err.message}`);
+      return null;
+    }
   }
+  return null;
 };
 
 /**
