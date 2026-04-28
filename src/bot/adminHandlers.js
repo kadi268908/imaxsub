@@ -2115,18 +2115,190 @@ const registerAdminHandlers = (bot) => {
     }
   });
 
-  // ── /invite <telegramId> [category] — resend category-wise invite ─────────
+  // ── /invite (all|telegramId)|(movie|desi|non_desi) — resend invite links ─
   bot.command('invite', requireAdmin, async (ctx) => {
     try {
-      const parts = String(ctx.message?.text || '').trim().split(/\s+/);
-      if (parts.length < 2) {
-        return ctx.reply('Usage: /invite <telegramId> [movie|desi|non_desi]');
+      const rawArgs = String(ctx.message?.text || '')
+        .replace(/^\/invite(?:@\w+)?\b/i, '')
+        .trim();
+
+      if (!rawArgs) {
+        return ctx.reply('Usage: /invite (all|telegramId)|(movie|desi|non_desi)');
       }
 
-      const targetId = parseInt(parts[1], 10);
-      const categoryInput = parts[2] || null;
-      if (!targetId) {
-        return ctx.reply('❌ Invalid telegramId. Usage: /invite <telegramId> [category]');
+      let mode = 'single';
+      let targetId = null;
+      let categoryInput = null;
+
+      if (rawArgs.includes('|')) {
+        const [targetPartRaw, categoryPartRaw] = rawArgs.split('|').map((value) => String(value || '').trim());
+        const targetPart = String(targetPartRaw || '').toLowerCase();
+        categoryInput = categoryPartRaw || null;
+
+        if (!targetPart || !categoryInput) {
+          return ctx.reply('❌ Invalid format. Usage: /invite (all|telegramId)|(movie|desi|non_desi)');
+        }
+
+        if (targetPart === 'all') {
+          mode = 'all';
+        } else {
+          targetId = parseInt(targetPart, 10);
+          if (!targetId) {
+            return ctx.reply('❌ Invalid telegramId. Usage: /invite (all|telegramId)|(movie|desi|non_desi)');
+          }
+        }
+      } else {
+        // Backward compatibility for old format: /invite <telegramId> [category]
+        const parts = rawArgs.split(/\s+/);
+        targetId = parseInt(parts[0], 10);
+        categoryInput = parts[1] || null;
+        if (!targetId) {
+          return ctx.reply('❌ Invalid format. Usage: /invite (all|telegramId)|(movie|desi|non_desi)');
+        }
+      }
+
+      if (mode === 'all') {
+        const normalizedCategory = parseCategoryInput(categoryInput);
+        if (!normalizedCategory) {
+          return ctx.reply('❌ Invalid category. Use movie, desi, or non_desi.');
+        }
+
+        const now = new Date();
+        const activeSubsRaw = await Subscription.find({
+          status: 'active',
+          expiryDate: { $gt: now },
+          planCategory: normalizedCategory,
+        })
+          .sort({ telegramId: 1, expiryDate: -1, createdAt: -1 });
+
+        if (!activeSubsRaw.length) {
+          return ctx.reply(
+            `ℹ️ No active subscriptions found for category *${normalizedCategory}*.`,
+            { parse_mode: 'Markdown' }
+          );
+        }
+
+        const latestSubByTelegramId = new Map();
+        for (const sub of activeSubsRaw) {
+          const key = String(sub.telegramId);
+          if (!latestSubByTelegramId.has(key)) {
+            latestSubByTelegramId.set(key, sub);
+          }
+        }
+
+        const candidateTelegramIds = [...latestSubByTelegramId.keys()].map((id) => Number(id));
+        const activeUsers = await User.find({
+          telegramId: { $in: candidateTelegramIds },
+          role: 'user',
+          status: 'active',
+          isBlocked: { $ne: true },
+        }).select('telegramId').lean();
+
+        const activeUserIdSet = new Set(activeUsers.map((user) => String(user.telegramId)));
+        const eligibleSubs = [...latestSubByTelegramId.values()]
+          .filter((sub) => activeUserIdSet.has(String(sub.telegramId)));
+
+        let alreadyInGroupCount = 0;
+        let noGroupMappingCount = 0;
+        let inviteSentCount = 0;
+        let inviteGeneratedDmFailedCount = 0;
+        let failedCount = 0;
+
+        for (const sub of eligibleSubs) {
+          const userTelegramId = Number(sub.telegramId);
+          const inviteGroupId = getSubscriptionGroupId(sub);
+          if (!inviteGroupId) {
+            noGroupMappingCount += 1;
+            continue;
+          }
+
+          try {
+            const alreadyInGroup = await isGroupMember(bot, inviteGroupId, userTelegramId);
+            if (alreadyInGroup) {
+              alreadyInGroupCount += 1;
+              continue;
+            }
+
+            await unbanFromGroup(bot, inviteGroupId, userTelegramId);
+            await revokeSubscriptionInviteLink(bot, sub);
+            const inviteLink = await generateInviteLink(bot, inviteGroupId, userTelegramId, sub.expiryDate);
+            if (!inviteLink) {
+              failedCount += 1;
+              continue;
+            }
+
+            await Subscription.findByIdAndUpdate(sub._id, {
+              inviteLink,
+              inviteLinkIssuedAt: new Date(),
+              inviteLinkTtlMinutes: Math.max(1, parseInt(process.env.INVITE_LINK_TTL_MINUTES || '10', 10)),
+            });
+
+            const delivered = await safeSend(
+              bot,
+              userTelegramId,
+              `🔗 *New Invite Link Generated*\n\n` +
+              `Aapka naya joining link ready hai. Niche button pe click karke group join karein.\n\n` +
+              `⏰ Link limited-time aur single-use hai.`,
+              {
+                parse_mode: 'Markdown',
+                reply_markup: {
+                  inline_keyboard: [[{ text: '🔗 Join Premium Group', url: inviteLink, style: 'success' }]],
+                },
+              }
+            );
+
+            if (delivered) {
+              inviteSentCount += 1;
+            } else {
+              inviteGeneratedDmFailedCount += 1;
+            }
+          } catch (_) {
+            failedCount += 1;
+          }
+        }
+
+        await AdminLog.create({
+          adminId: ctx.from.id,
+          actionType: 'resend_invite',
+          details: {
+            command: 'invite_all',
+            category: normalizedCategory,
+            totalActiveSubscriptionsInCategory: activeSubsRaw.length,
+            eligibleActiveUsers: eligibleSubs.length,
+            inviteSentCount,
+            inviteGeneratedDmFailedCount,
+            alreadyInGroupCount,
+            noGroupMappingCount,
+            failedCount,
+          },
+        });
+
+        const nowText = new Date();
+        await logToChannel(
+          bot,
+          `📨 *Bulk Invite Run*\n` +
+          `By Admin Id: \`${ctx.from.id}\`\n` +
+          `Category: *${normalizedCategory}*\n` +
+          `Eligible active users: *${eligibleSubs.length}*\n` +
+          `Invite sent: *${inviteSentCount}*\n` +
+          `Invite generated but DM failed: *${inviteGeneratedDmFailedCount}*\n` +
+          `Already in group: *${alreadyInGroupCount}*\n` +
+          `No group mapping: *${noGroupMappingCount}*\n` +
+          `Failed: *${failedCount}*\n` +
+          `Date: ${nowText.toLocaleDateString('en-GB')}\n` +
+          `Time: ${nowText.toLocaleTimeString('en-IN')}`
+        );
+
+        return ctx.reply(
+          `✅ Bulk invite completed for *${normalizedCategory}*.\n\n` +
+          `Eligible active users: *${eligibleSubs.length}*\n` +
+          `Invite sent: *${inviteSentCount}*\n` +
+          `Invite generated but DM failed: *${inviteGeneratedDmFailedCount}*\n` +
+          `Already in group: *${alreadyInGroupCount}*\n` +
+          `No group mapping: *${noGroupMappingCount}*\n` +
+          `Failed: *${failedCount}*`,
+          { parse_mode: 'Markdown' }
+        );
       }
 
       const targetUser = await User.findOne({ telegramId: targetId });
@@ -2153,7 +2325,7 @@ const registerAdminHandlers = (bot) => {
       if (resolved.error === 'ambiguous') {
         return ctx.reply(
           `⚠️ Multiple active subscriptions found. Please pass category.\n\n` +
-          `Usage: /invite <telegramId> [category]\n\n` +
+          `Usage: /invite (all|telegramId)|(movie|desi|non_desi)\n\n` +
           `${formatSubscriptionCategoryList(resolved.subscriptions)}`
         );
       }
