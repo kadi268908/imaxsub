@@ -824,7 +824,7 @@ const initCronJobs = (bot) => {
   }
   cron.schedule('0 10 * * *', () => runAsLeader('inactiveUserDetector', () => inactiveUserDetector(bot)), cronOptions); // 10:00 AM
   cron.schedule('0 11 * * *', () => runAsLeader('membershipMonitor', () => membershipMonitor(bot)), cronOptions);    // 11:00 AM
-  cron.schedule('59 22 * * *', () => runAsLeader('dailySummaryJob', () => dailySummaryJob(bot)), cronOptions);     // 23:59
+  cron.schedule('59 23 * * *', () => runAsLeader('dailySummaryJob', () => dailySummaryJob(bot)), cronOptions);     // 23:59
   cron.schedule('5 0 * * *', () => runAsLeader('offerExpiryChecker', () => offerExpiryChecker()), cronOptions);       // 00:05
   cron.schedule('*/15 * * * *', () => runAsLeader('inviteLinkExpiryNotifier', () => inviteLinkExpiryNotifier(bot)), cronOptions); // every 15 min
   cron.schedule('0 */2 * * *', () => runAsLeader('pendingRequestReminderJob', () => pendingRequestReminderJob(bot)), cronOptions); // every 2 hours
