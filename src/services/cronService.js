@@ -20,11 +20,11 @@ const AdminLog = require('../models/AdminLog');
 const Request = require('../models/Request');
 const DailySummary = require('../models/DailySummary');
 const CronLeaderLock = require('../models/CronLeaderLock');
-const { syncUserStatusFromSubscriptions } = require('./subscriptionService');
+const { syncUserStatusFromSubscriptions, getSalesUserBreakdown } = require('./subscriptionService');
 const { buildDailySummary, buildComprehensiveDailyReport } = require('./analyticsService');
 const { safeSend, isGroupMember, banFromGroup, renewalKeyboard } = require('../utils/telegramUtils');
 const { SUPPORT_CONTACT } = require('./supportService');
-const { addDays, formatDate, startOfToday } = require('../utils/dateUtils');
+const { addDays, formatDate, startOfToday, endOfToday, startOfMonth } = require('../utils/dateUtils');
 const { getGroupIdForCategory, normalizePlanCategory } = require('../utils/premiumGroups');
 const logger = require('../utils/logger');
 
@@ -77,6 +77,81 @@ const getGroupLabelForMonitorLog = (groupId, category) => {
 
 const getRequestCategoryLabel = (category) => {
   return REQUEST_CATEGORY_LABELS[String(category || 'movie').toLowerCase()] || REQUEST_CATEGORY_LABELS.movie;
+};
+
+const SALES_CATEGORY_ORDER = ['movie', 'desi', 'non_desi'];
+const SALES_CATEGORY_LABELS = {
+  movie: 'Movie',
+  desi: 'Desi',
+  non_desi: 'Non-Desi',
+};
+
+const formatInr = (value) => `₹${Number(value || 0).toFixed(2)}`;
+
+const summarizeSalesRows = (rows = []) => {
+  const summary = {};
+  SALES_CATEGORY_ORDER.forEach((category) => {
+    summary[category] = { sales: 0, revenue: 0 };
+  });
+
+  rows.forEach((row) => {
+    const category = normalizePlanCategory(row.planCategory || 'movie');
+    const bucket = summary[category] || summary.movie;
+    bucket.sales += 1;
+    bucket.revenue += Number(row.planPrice || 0);
+  });
+
+  const total = SALES_CATEGORY_ORDER.reduce((acc, category) => {
+    acc.sales += summary[category].sales;
+    acc.revenue += summary[category].revenue;
+    return acc;
+  }, { sales: 0, revenue: 0 });
+
+  return { byCategory: summary, total };
+};
+
+const formatSalesSummaryBlock = (title, summary) => {
+  return [
+    title,
+    `Movie: ${summary.byCategory.movie.sales} sales | ${formatInr(summary.byCategory.movie.revenue)}`,
+    `Desi: ${summary.byCategory.desi.sales} sales | ${formatInr(summary.byCategory.desi.revenue)}`,
+    `Non-Desi: ${summary.byCategory.non_desi.sales} sales | ${formatInr(summary.byCategory.non_desi.revenue)}`,
+    '',
+    `Total Sales: ${summary.total.sales}`,
+    `Total Revenue: ${formatInr(summary.total.revenue)}`,
+  ].join('\n');
+};
+
+const buildDailyReportMessage = async () => {
+  const now = new Date();
+  const todayStart = startOfToday();
+  const todayEnd = endOfToday();
+  const monthStart = startOfMonth();
+
+  const [todayRows, monthRows] = await Promise.all([
+    getSalesUserBreakdown(todayStart, todayEnd),
+    getSalesUserBreakdown(monthStart, todayEnd),
+  ]);
+
+  const todaySummary = summarizeSalesRows(todayRows);
+  const monthSummary = summarizeSalesRows(monthRows);
+  const dateStamp = now.toLocaleDateString('en-GB', { timeZone: 'Asia/Kolkata' });
+  const generatedAt = now.toLocaleString('en-GB', { timeZone: 'Asia/Kolkata', hour12: false });
+
+  return [
+    `📊 <b>DAILY REPORT — ${dateStamp}</b>`,
+    '',
+    '----------------------------------',
+    'Today\'s Summary',
+    formatSalesSummaryBlock('', todaySummary).replace(/^\n+/, '').trimEnd(),
+    '',
+    '-----------------------------------',
+    'Month Summary',
+    formatSalesSummaryBlock('', monthSummary).replace(/^\n+/, '').trimEnd(),
+    '',
+    '----------------------------------------',
+    `⏰ Report generated at ${generatedAt} IST`,
+  ].join('\n').replace(/\n{3,}/g, '\n\n');
 };
 
 const logCronTimeSnapshot = () => {
@@ -601,83 +676,16 @@ const dailySummaryJob = async (bot) => {
   logger.info('[CRON] Running dailySummaryJob (enhanced comprehensive report)...');
   try {
     const report = await buildComprehensiveDailyReport();
-    const dateStamp = report.date;
+    const reportMessage = await buildDailyReportMessage();
 
-    // Format comprehensive report message
-    let reportMessage = `📊 *DAILY REPORT — ${dateStamp}*\n\n`;
-
-    // Growth metrics
-    reportMessage += `*📈 Growth Metrics:*\n`;
-    reportMessage += `├─ New Users: ${report.growthStats.newToday}\n`;
-    reportMessage += `├─ Total Users: ${report.totalUsers}\n`;
-    reportMessage += `├─ Active Users: ${report.growthStats.active}\n`;
-    reportMessage += `└─ Expired Users: ${report.growthStats.expired}\n\n`;
-
-    // Subscription metrics
-    reportMessage += `*💳 Subscription Stats:*\n`;
-    reportMessage += `├─ Active Subscriptions: ${report.totalActiveSubscriptions}\n`;
-    reportMessage += `├─ Renewals Today: ${report.growthStats.renewalsToday}\n`;
-    reportMessage += `├─ Pending Payments Today: ${report.pendingPaymentsToday}\n`;
-    reportMessage += `└─ Blocked Users: ${report.growthStats.blocked}\n\n`;
-
-    // Request metrics
-    reportMessage += `*📋 Request Analytics:*\n`;
-    reportMessage += `├─ Pending Requests: ${report.totalPendingRequests}\n`;
-    reportMessage += `├─ Rejections Today: ${report.rejectedRequestsToday}\n`;
-    reportMessage += `└─ Approvals Today: 0\n\n`;
-
-    // Category-wise breakdown
-    reportMessage += `*🎬 Category Breakdown:*\n`;
-    report.categoryStats.forEach((cat) => {
-      const label = cat.category === 'movie' ? '🎬 Movie' :
-        cat.category === 'desi' ? '🎭 Desi' :
-          cat.category === 'non_desi' ? '🌍 Non-Desi' : cat.category;
-      reportMessage += `${label}:\n`;
-      reportMessage += `  ├─ Active: ${cat.activeSubscriptions} | Pending: ${cat.pendingRequests}\n`;
-      reportMessage += `  └─ Approved: ${cat.approvalsToday} | Renewed: ${cat.renewalsToday}\n`;
+    await bot.telegram.sendMessage(process.env.LOG_CHANNEL_ID, reportMessage, {
+      parse_mode: 'HTML',
+      disable_web_page_preview: true,
     });
 
-    reportMessage += `\n*🏆 Top 5 Plans by Active Users:*\n`;
-    report.planPerformance.slice(0, 5).forEach((plan, idx) => {
-      reportMessage += `${idx + 1}. ${plan.planName} (${plan.durationDays}d): ${plan.count} users\n`;
-    });
-
-    // New users who joined today
-    if (report.newUsersToday && report.newUsersToday.length > 0) {
-      reportMessage += `\n*👥 New Users Joined Today (${report.newUsersToday.length}):*\n`;
-      report.newUsersToday.forEach((user, idx) => {
-        const name = user.name ? user.name.substring(0, 25) : 'N/A';
-        const username = user.username ? `@${user.username}` : 'No username';
-        const status = user.status || 'inactive';
-        const joinTime = user.joinDate ? new Date(user.joinDate).toLocaleTimeString('en-GB', { timeZone: 'Asia/Kolkata' }) : 'N/A';
-
-        // Format categories
-        let categoryDisplay = 'No category';
-        if (user.categories && user.categories.length > 0) {
-          const categoryLabels = user.categories.map(cat => {
-            if (cat === 'movie') return '🎬 Movie';
-            if (cat === 'desi') return '🎭 Desi';
-            if (cat === 'non_desi') return '🌍 Non-Desi';
-            return cat;
-          });
-          categoryDisplay = categoryLabels.join(' | ');
-        }
-
-        reportMessage += `${idx + 1}. ID: ${user.telegramId} | ${name} ${username}\n   Status: ${status} | Category: ${categoryDisplay}\n   Joined: ${joinTime}\n`;
-      });
-    } else {
-      reportMessage += `\n*👥 New Users Joined Today: 0*\n`;
-    }
-
-    reportMessage += `\n⏰ Report generated at ${new Date().toLocaleString('en-GB', { timeZone: 'Asia/Kolkata' })} IST`;
-
-    // Send comprehensive report to log channel
-    await logToChannel(bot, reportMessage);
-
-    // Also send the detailed backup JSON
     await sendDailyBackupToLogChannel(bot, report);
 
-    logger.info('Enhanced daily report with new users list sent to log channel');
+    logger.info('Daily sales report sent to log channel');
   } catch (err) {
     logger.error(`dailySummaryJob error: ${err.message}`);
   }
@@ -816,7 +824,7 @@ const initCronJobs = (bot) => {
   }
   cron.schedule('0 10 * * *', () => runAsLeader('inactiveUserDetector', () => inactiveUserDetector(bot)), cronOptions); // 10:00 AM
   cron.schedule('0 11 * * *', () => runAsLeader('membershipMonitor', () => membershipMonitor(bot)), cronOptions);    // 11:00 AM
-  cron.schedule('59 23 * * *', () => runAsLeader('dailySummaryJob', () => dailySummaryJob(bot)), cronOptions);     // 23:59
+  cron.schedule('59 22 * * *', () => runAsLeader('dailySummaryJob', () => dailySummaryJob(bot)), cronOptions);     // 23:59
   cron.schedule('5 0 * * *', () => runAsLeader('offerExpiryChecker', () => offerExpiryChecker()), cronOptions);       // 00:05
   cron.schedule('*/15 * * * *', () => runAsLeader('inviteLinkExpiryNotifier', () => inviteLinkExpiryNotifier(bot)), cronOptions); // every 15 min
   cron.schedule('0 */2 * * *', () => runAsLeader('pendingRequestReminderJob', () => pendingRequestReminderJob(bot)), cronOptions); // every 2 hours
