@@ -159,6 +159,23 @@ const inspectPremiumGroupConfig = () => {
   return { categoryMap, fallback, warnings, errors };
 };
 
+const getPreviousDayRange = () => {
+  const start = startOfToday();
+  start.setDate(start.getDate() - 1);
+  const end = new Date(start);
+  end.setHours(23, 59, 59, 999);
+  return { start, end };
+};
+
+const getPreviousMonthRange = () => {
+  const today = new Date();
+  const start = new Date(today.getFullYear(), today.getMonth() - 1, 1);
+  start.setHours(0, 0, 0, 0);
+  const end = new Date(today.getFullYear(), today.getMonth(), 0);
+  end.setHours(23, 59, 59, 999);
+  return { start, end };
+};
+
 const registerSuperAdminHandlers = (bot) => {
 
   bot.use(async (ctx, next) => {
@@ -795,19 +812,20 @@ const registerSuperAdminHandlers = (bot) => {
       reply_markup: {
         inline_keyboard: [
           [{ text: '📅 Daily Sales', callback_data: 'report_daily' }, { text: '📆 Weekly', callback_data: 'report_weekly' }],
-          [{ text: '🗓 Monthly', callback_data: 'report_monthly' }, { text: '📋 Today Expiry', callback_data: 'report_expiry' }],
+          [{ text: '🗓 Monthly', callback_data: 'report_monthly' }, { text: '🕓 Previous Day', callback_data: 'report_previous_day' }],
+          [{ text: '🗓 Previous Month', callback_data: 'report_previous_month' }, { text: '📋 Today Expiry', callback_data: 'report_expiry' }],
           [{ text: '✅ Active Users', callback_data: 'report_active' }, { text: '❌ Expired Users', callback_data: 'report_expired' }],
         ],
       },
     });
   });
 
-  bot.action(/^report_(daily|weekly|monthly|expiry|active|expired)$/, requireSuperAdmin, async (ctx) => {
+  bot.action(/^report_(daily|weekly|monthly|previous_day|previous_month|expiry|active|expired)$/, requireSuperAdmin, async (ctx) => {
     await ctx.answerCbQuery('Generating...');
     const type = ctx.match[1];
     try {
       let message = '';
-      if (type === 'daily' || type === 'weekly' || type === 'monthly') {
+      if (type === 'daily' || type === 'weekly' || type === 'monthly' || type === 'previous_day' || type === 'previous_month') {
         let start = startOfToday();
         let end = endOfToday();
         let title = 'Daily Sales Report';
@@ -820,6 +838,12 @@ const registerSuperAdminHandlers = (bot) => {
           start = startOfMonth();
           end = new Date();
           title = 'Monthly Sales Report';
+        } else if (type === 'previous_day') {
+          ({ start, end } = getPreviousDayRange());
+          title = 'Previous Day Sales Report';
+        } else if (type === 'previous_month') {
+          ({ start, end } = getPreviousMonthRange());
+          title = 'Previous Month Sales Report';
         }
 
         const userRows = await getSalesUserBreakdown(start, end);

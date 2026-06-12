@@ -113,6 +113,7 @@ const registerPaymentFlow = ({
                     { source: qrPath },
                     {
                         caption: plansMessage,
+                        parse_mode: 'Markdown',
                         ...paidKeyboard,
                     }
                 );
@@ -120,6 +121,7 @@ const registerPaymentFlow = ({
                 await ctx.reply(
                     `${plansMessage}\n\n⚠️ QR image missing: ${qrFileName} (assets folder).`,
                     {
+                        parse_mode: 'Markdown',
                         ...paidKeyboard,
                     }
                 );
@@ -445,106 +447,128 @@ const registerPaymentFlow = ({
 
         try {
             const userDoc = await User.findOne({ telegramId: ctx.from.id });
-        if (getUserFlowState(userDoc) !== USER_FLOW_STATE.AWAITING_PAYMENT_SCREENSHOT) return;
+            if (getUserFlowState(userDoc) !== USER_FLOW_STATE.AWAITING_PAYMENT_SCREENSHOT) return;
 
-        const category = normalizePlanCategory(userDoc?.meta?.paymentCategory);
-        const paymentFlowType = String(userDoc?.meta?.paymentFlowType || 'new_request');
-        const renewalPlanId = userDoc?.meta?.renewalPlanId || null;
-        const categoryLabel = getPlanCategoryLabel(category);
+            const category = normalizePlanCategory(userDoc?.meta?.paymentCategory);
+            const paymentFlowType = String(userDoc?.meta?.paymentFlowType || 'new_request');
+            const renewalPlanId = userDoc?.meta?.renewalPlanId || null;
+            const categoryLabel = getPlanCategoryLabel(category);
 
-        let fileId;
-        let fileUniqueId;
+            let fileId;
+            let fileUniqueId;
 
-        if (sourceType === 'photo') {
-            const photos = ctx.message?.photo || [];
-            const bestPhoto = photos[photos.length - 1];
-            fileId = bestPhoto?.file_id;
-            fileUniqueId = bestPhoto?.file_unique_id;
-        } else {
-            fileId = ctx.message?.document?.file_id;
-            fileUniqueId = ctx.message?.document?.file_unique_id;
-        }
+            if (sourceType === 'photo') {
+                const photos = ctx.message?.photo || [];
+                const bestPhoto = photos[photos.length - 1];
+                fileId = bestPhoto?.file_id;
+                fileUniqueId = bestPhoto?.file_unique_id;
+            } else {
+                fileId = ctx.message?.document?.file_id;
+                fileUniqueId = ctx.message?.document?.file_unique_id;
+            }
 
-        if (!fileId) {
-            await ctx.reply('❌ Invalid screenshot. Please send a clear image.');
-            return;
-        }
+            if (!fileId) {
+                await ctx.reply('❌ Invalid screenshot. Please send a clear image.');
+                return;
+            }
 
-        const latestStored = userDoc?.meta?.latestPaymentProof;
-        if (
-            fileUniqueId
-            && latestStored?.fileUniqueId === fileUniqueId
-            && normalizePlanCategory(latestStored?.category) === category
-        ) {
-            await ctx.reply(
-                `ℹ️ Ye screenshot pehle receive ho chuka hai.\n\n` +
-                `Agar naya proof bhejna hai to *alag image* bhejiye, ya *Cancel Upload* use karein aur dubara flow start karein.`,
-                { parse_mode: 'Markdown' }
-            );
-            return;
-        }
-
-        const isRenewalFlow = paymentFlowType === 'renewal' && renewalPlanId;
-
-        if (!isRenewalFlow) {
-            const pendingReq = await Request.findOne({
-                telegramId: ctx.from.id,
-                status: 'pending',
-                requestCategory: category,
-            });
-            if (pendingReq) {
-                await User.findOneAndUpdate(
-                    { telegramId: ctx.from.id },
-                    buildSetUserFlowUpdate(USER_FLOW_STATE.IDLE, {}, clearPaymentFlowMetaUnset)
-                );
+            const latestStored = userDoc?.meta?.latestPaymentProof;
+            if (
+                fileUniqueId
+                && latestStored?.fileUniqueId === fileUniqueId
+                && normalizePlanCategory(latestStored?.category) === category
+            ) {
                 await ctx.reply(
-                    `⏳ *${escapeMarkdown(categoryLabel)}* ke liye request pehle se pending hai.\n\n` +
-                    `Admin approval ka wait karein — bar bar screenshot bhejne ki zarurat nahi.`,
+                    `ℹ️ Ye screenshot pehle receive ho chuka hai.\n\n` +
+                    `Agar naya proof bhejna hai to *alag image* bhejiye, ya *Cancel Upload* use karein aur dubara flow start karein.`,
                     { parse_mode: 'Markdown' }
                 );
                 return;
             }
 
-            const activeSub = await Subscription.findOne({
-                telegramId: ctx.from.id,
-                status: 'active',
-                expiryDate: { $gt: new Date() },
-                planCategory: category,
-            });
-            if (activeSub) {
-                await User.findOneAndUpdate(
-                    { telegramId: ctx.from.id },
-                    buildSetUserFlowUpdate(USER_FLOW_STATE.IDLE, {}, clearPaymentFlowMetaUnset)
-                );
+            const isRenewalFlow = paymentFlowType === 'renewal' && renewalPlanId;
+
+            if (!isRenewalFlow) {
+                const pendingReq = await Request.findOne({
+                    telegramId: ctx.from.id,
+                    status: 'pending',
+                    requestCategory: category,
+                });
+                if (pendingReq) {
+                    await User.findOneAndUpdate(
+                        { telegramId: ctx.from.id },
+                        buildSetUserFlowUpdate(USER_FLOW_STATE.IDLE, {}, clearPaymentFlowMetaUnset)
+                    );
+                    await ctx.reply(
+                        `⏳ *${escapeMarkdown(categoryLabel)}* ke liye request pehle se pending hai.\n\n` +
+                        `Admin approval ka wait karein — bar bar screenshot bhejne ki zarurat nahi.`,
+                        { parse_mode: 'Markdown' }
+                    );
+                    return;
+                }
+
+                const activeSub = await Subscription.findOne({
+                    telegramId: ctx.from.id,
+                    status: 'active',
+                    expiryDate: { $gt: new Date() },
+                    planCategory: category,
+                });
+                if (activeSub) {
+                    await User.findOneAndUpdate(
+                        { telegramId: ctx.from.id },
+                        buildSetUserFlowUpdate(USER_FLOW_STATE.IDLE, {}, clearPaymentFlowMetaUnset)
+                    );
+                    await ctx.reply(
+                        `✅ *${escapeMarkdown(categoryLabel)}* subscription already active hai.\n\n` +
+                        `Bar bar screenshot bhejne ki zarurat nahi.`,
+                        { parse_mode: 'Markdown' }
+                    );
+                    return;
+                }
+            }
+
+            const now = Date.now();
+            const rateInfo = userDoc?.meta?.paymentProofRateLimit || {};
+            const blockedUntilMs = rateInfo?.blockedUntil ? new Date(rateInfo.blockedUntil).getTime() : 0;
+            if (blockedUntilMs && now < blockedUntilMs) {
+                const unblockTime = new Date(blockedUntilMs).toLocaleString('en-IN');
                 await ctx.reply(
-                    `✅ *${escapeMarkdown(categoryLabel)}* subscription already active hai.\n\n` +
-                    `Bar bar screenshot bhejne ki zarurat nahi.`,
+                    `⏳ Screenshot upload temporarily paused due to too many attempts.\n\n` +
+                    `Please try again after: *${escapeMarkdown(unblockTime)}*`,
                     { parse_mode: 'Markdown' }
                 );
                 return;
             }
-        }
 
-        const now = Date.now();
-        const rateInfo = userDoc?.meta?.paymentProofRateLimit || {};
-        const blockedUntilMs = rateInfo?.blockedUntil ? new Date(rateInfo.blockedUntil).getTime() : 0;
-        if (blockedUntilMs && now < blockedUntilMs) {
-            const unblockTime = new Date(blockedUntilMs).toLocaleString('en-IN');
-            await ctx.reply(
-                `⏳ Screenshot upload temporarily paused due to too many attempts.\n\n` +
-                `Please try again after: *${escapeMarkdown(unblockTime)}*`,
-                { parse_mode: 'Markdown' }
-            );
-            return;
-        }
+            const windowStartMs = rateInfo?.windowStart ? new Date(rateInfo.windowStart).getTime() : 0;
+            const isInsideWindow = windowStartMs && (now - windowStartMs) < PAYMENT_PROOF_SPAM_WINDOW_MINUTES * 60 * 1000;
+            const nextCount = isInsideWindow ? Number(rateInfo?.count || 0) + 1 : 1;
+            const nextWindowStart = isInsideWindow ? new Date(windowStartMs) : new Date(now);
 
-        const windowStartMs = rateInfo?.windowStart ? new Date(rateInfo.windowStart).getTime() : 0;
-        const isInsideWindow = windowStartMs && (now - windowStartMs) < PAYMENT_PROOF_SPAM_WINDOW_MINUTES * 60 * 1000;
-        const nextCount = isInsideWindow ? Number(rateInfo?.count || 0) + 1 : 1;
-        const nextWindowStart = isInsideWindow ? new Date(windowStartMs) : new Date(now);
+            if (nextCount > PAYMENT_PROOF_MAX_ATTEMPTS) {
+                const cooldownUntil = new Date(now + PAYMENT_PROOF_COOLDOWN_MINUTES * 60 * 1000);
+                await User.findOneAndUpdate(
+                    { telegramId: ctx.from.id },
+                    {
+                        $set: {
+                            'meta.paymentProofRateLimit': {
+                                windowStart: nextWindowStart,
+                                count: nextCount,
+                                blockedUntil: cooldownUntil,
+                            },
+                        },
+                    }
+                );
 
-        if (nextCount > PAYMENT_PROOF_MAX_ATTEMPTS) {
-            const cooldownUntil = new Date(now + PAYMENT_PROOF_COOLDOWN_MINUTES * 60 * 1000);
+                logger.warn(`Payment proof cooldown applied for ${ctx.from.id} until ${cooldownUntil.toISOString()}`);
+                await ctx.reply(
+                    `🚫 Too many screenshot attempts detected.\n\n` +
+                    `Please wait *${PAYMENT_PROOF_COOLDOWN_MINUTES} minutes* and try again.`,
+                    { parse_mode: 'Markdown' }
+                );
+                return;
+            }
+
             await User.findOneAndUpdate(
                 { telegramId: ctx.from.id },
                 {
@@ -552,252 +576,230 @@ const registerPaymentFlow = ({
                         'meta.paymentProofRateLimit': {
                             windowStart: nextWindowStart,
                             count: nextCount,
-                            blockedUntil: cooldownUntil,
+                            blockedUntil: null,
                         },
                     },
                 }
             );
 
-            logger.warn(`Payment proof cooldown applied for ${ctx.from.id} until ${cooldownUntil.toISOString()}`);
-            await ctx.reply(
-                `🚫 Too many screenshot attempts detected.\n\n` +
-                `Please wait *${PAYMENT_PROOF_COOLDOWN_MINUTES} minutes* and try again.`,
-                { parse_mode: 'Markdown' }
-            );
-            return;
-        }
+            const safeName = escapeMarkdown(userDoc.name || ctx.from.first_name || 'User');
+            const safeUsername = userDoc.username ? `@${escapeMarkdown(userDoc.username)}` : 'N/A';
 
-        await User.findOneAndUpdate(
-            { telegramId: ctx.from.id },
-            {
-                $set: {
-                    'meta.paymentProofRateLimit': {
-                        windowStart: nextWindowStart,
-                        count: nextCount,
-                        blockedUntil: null,
+            if (paymentFlowType === 'renewal' && renewalPlanId) {
+                const user = await findOrCreateUser(ctx.from);
+                const plan = await Plan.findById(renewalPlanId);
+                if (!plan) {
+                    await User.findOneAndUpdate(
+                        { telegramId: ctx.from.id },
+                        buildSetUserFlowUpdate(
+                            USER_FLOW_STATE.IDLE,
+                            {},
+                            {
+                                'meta.paymentCategory': '',
+                                'meta.paymentFlowType': '',
+                                'meta.renewalPlanId': '',
+                                'meta.paymentSelectedPlanId': '',
+                            }
+                        )
+                    );
+                    await ctx.reply('❌ Renewal plan not found. Please open status and retry renewal.');
+                    return;
+                }
+
+                const renewalCategory = normalizePlanCategory(plan.category || category);
+                if (renewalCategory !== category) {
+                    await User.findOneAndUpdate(
+                        { telegramId: ctx.from.id },
+                        buildSetUserFlowUpdate(
+                            USER_FLOW_STATE.IDLE,
+                            {},
+                            {
+                                'meta.paymentCategory': '',
+                                'meta.paymentFlowType': '',
+                                'meta.renewalPlanId': '',
+                                'meta.paymentSelectedPlanId': '',
+                            }
+                        )
+                    );
+                    await ctx.reply('❌ Renewal category mismatch. Please retry renewal from status.');
+                    return;
+                }
+
+                const existingPending = await Request.findOne({
+                    telegramId: ctx.from.id,
+                    status: 'pending',
+                    requestCategory: renewalCategory,
+                });
+                if (existingPending) {
+                    await User.findOneAndUpdate(
+                        { telegramId: ctx.from.id },
+                        buildSetUserFlowUpdate(
+                            USER_FLOW_STATE.IDLE,
+                            {},
+                            {
+                                'meta.paymentCategory': '',
+                                'meta.paymentFlowType': '',
+                                'meta.renewalPlanId': '',
+                                'meta.paymentSelectedPlanId': '',
+                            }
+                        )
+                    );
+                    await ctx.reply(
+                        `⏳ *${escapeMarkdown(getPlanCategoryLabel(renewalCategory))} renewal pending hai!*\n\n` +
+                        `Admin approval ka wait kijiye.`,
+                        { parse_mode: 'Markdown' }
+                    );
+                    return;
+                }
+
+                const renewalReq = await Request.create({
+                    userId: user._id,
+                    telegramId: ctx.from.id,
+                    status: 'pending',
+                    requestCategory: renewalCategory,
+                    selectedPlanId: plan._id,
+                    paymentProof: {
+                        fileId,
+                        fileUniqueId,
+                        sourceType,
+                        logMessageId: null,
                     },
-                },
-            }
-        );
+                });
 
-        const safeName = escapeMarkdown(userDoc.name || ctx.from.first_name || 'User');
-        const safeUsername = userDoc.username ? `@${escapeMarkdown(userDoc.username)}` : 'N/A';
+                const consumedOffer = await consumeOneTimeUserOffer(ctx.from.id, renewalReq._id);
+                const bestOffer = await getBestPublicOffer(plan._id);
+                const privateDiscountPercent = Number(consumedOffer?.discountPercent || 0);
+                const publicDiscountPercent = Number(bestOffer?.discountPercent || 0);
+                const appliedDiscountPercent = privateDiscountPercent > 0
+                    ? privateDiscountPercent
+                    : publicDiscountPercent;
+                const appliedOfferTitle = privateDiscountPercent > 0
+                    ? consumedOffer?.title
+                    : bestOffer?.title;
+                const discountedPlanPrice = appliedDiscountPercent > 0
+                    ? getDiscountedPrice(plan.price, appliedDiscountPercent)
+                    : plan.price;
+                if (consumedOffer) {
+                    await Request.findByIdAndUpdate(renewalReq._id, {
+                        appliedUserOffer: {
+                            offerId: consumedOffer._id,
+                            title: consumedOffer.title,
+                            discountPercent: consumedOffer.discountPercent,
+                        },
+                    });
+                } else if (bestOffer?.discountPercent > 0) {
+                    await Request.findByIdAndUpdate(renewalReq._id, {
+                        appliedUserOffer: {
+                            offerId: bestOffer._id,
+                            title: bestOffer.title,
+                            discountPercent: Number(bestOffer.discountPercent || 0),
+                        },
+                    });
+                }
 
-        if (paymentFlowType === 'renewal' && renewalPlanId) {
-            const user = await findOrCreateUser(ctx.from);
-            const plan = await Plan.findById(renewalPlanId);
-            if (!plan) {
-                await User.findOneAndUpdate(
-                    { telegramId: ctx.from.id },
-                    buildSetUserFlowUpdate(
+                await User.findByIdAndUpdate(user._id, {
+                    ...buildSetUserFlowUpdate(
                         USER_FLOW_STATE.IDLE,
                         {},
                         {
+                            'meta.latestPaymentProof': '',
+                            'meta.paymentProofReadyForCategory': '',
                             'meta.paymentCategory': '',
                             'meta.paymentFlowType': '',
                             'meta.renewalPlanId': '',
                             'meta.paymentSelectedPlanId': '',
                         }
-                    )
-                );
-                await ctx.reply('❌ Renewal plan not found. Please open status and retry renewal.');
-                return;
-            }
+                    ),
+                });
 
-            const renewalCategory = normalizePlanCategory(plan.category || category);
-            if (renewalCategory !== category) {
-                await User.findOneAndUpdate(
-                    { telegramId: ctx.from.id },
-                    buildSetUserFlowUpdate(
-                        USER_FLOW_STATE.IDLE,
-                        {},
-                        {
-                            'meta.paymentCategory': '',
-                            'meta.paymentFlowType': '',
-                            'meta.renewalPlanId': '',
-                            'meta.paymentSelectedPlanId': '',
-                        }
-                    )
-                );
-                await ctx.reply('❌ Renewal category mismatch. Please retry renewal from status.');
-                return;
-            }
+                const safePlanName = escapeMarkdown(plan.name);
+                const renewalLogCaption =
+                    `🔄 *Renewal Request*\n\n` +
+                    `📦 Category: *${escapeMarkdown(categoryLabel)}*\n` +
+                    `👤 Name: ${safeName}\n` +
+                    `🆔 ID: \`${ctx.from.id}\`\n` +
+                    `📛 Username: ${safeUsername}\n` +
+                    (plan.price && appliedDiscountPercent > 0
+                        ? `🎁 Offer: *${escapeMarkdown(appliedOfferTitle || 'Applied Offer')}* (${appliedDiscountPercent}% OFF)\n` +
+                        `💰 Price: ~₹${formatInr(plan.price)}~ → *₹${formatInr(discountedPlanPrice)}*\n`
+                        : '') +
+                    `📋 Plan: ${safePlanName} (${plan.durationDays} days${plan.price ? ` · ₹${formatInr(plan.price)}` : ''})\n` +
+                    `🕒 Time: ${new Date().toLocaleString('en-IN')}`;
 
-            const existingPending = await Request.findOne({
-                telegramId: ctx.from.id,
-                status: 'pending',
-                requestCategory: renewalCategory,
-            });
-            if (existingPending) {
-                await User.findOneAndUpdate(
-                    { telegramId: ctx.from.id },
-                    buildSetUserFlowUpdate(
-                        USER_FLOW_STATE.IDLE,
-                        {},
-                        {
-                            'meta.paymentCategory': '',
-                            'meta.paymentFlowType': '',
-                            'meta.renewalPlanId': '',
-                            'meta.paymentSelectedPlanId': '',
-                        }
-                    )
-                );
+                const renewalKeyboard = {
+                    inline_keyboard: [[
+                        withStyle({ text: '✅ Approve', callback_data: `approve_${renewalReq._id}_${plan._id}` }, 'success'),
+                        withStyle({ text: '❌ Reject', callback_data: `reject_${renewalReq._id}` }, 'danger'),
+                    ]],
+                };
+
+                let logMsg;
+                try {
+                    logMsg = sourceType === 'photo'
+                        ? await bot.telegram.sendPhoto(
+                            process.env.LOG_CHANNEL_ID,
+                            fileId,
+                            {
+                                caption: renewalLogCaption,
+                                parse_mode: 'Markdown',
+                                reply_markup: renewalKeyboard,
+                            }
+                        )
+                        : await bot.telegram.sendDocument(
+                            process.env.LOG_CHANNEL_ID,
+                            fileId,
+                            {
+                                caption: renewalLogCaption,
+                                parse_mode: 'Markdown',
+                                reply_markup: renewalKeyboard,
+                            }
+                        );
+                } catch (err) {
+                    logger.error(`renewal log channel send error: ${err.message}`);
+                    logMsg = await bot.telegram.sendMessage(
+                        process.env.LOG_CHANNEL_ID,
+                        `${renewalLogCaption}\n\n⚠️ (Could not attach file; see user chat.)`,
+                        { parse_mode: 'Markdown', reply_markup: renewalKeyboard }
+                    );
+                }
+
+                await Request.findByIdAndUpdate(renewalReq._id, {
+                    logMessageId: logMsg.message_id,
+                    'paymentProof.logMessageId': logMsg.message_id,
+                });
+
                 await ctx.reply(
-                    `⏳ *${escapeMarkdown(getPlanCategoryLabel(renewalCategory))} renewal pending hai!*\n\n` +
-                    `Admin approval ka wait kijiye.`,
+                    `✅ *${escapeMarkdown(categoryLabel)} renewal request submitted!*\n\n` +
+                    `📋 Plan: *${escapeMarkdown(plan.name)}* (${plan.durationDays} days${plan.price ? ` · ₹${formatInr(plan.price)}` : ''})\n` +
+                    (plan.price && appliedDiscountPercent > 0
+                        ? `🎁 *Offer applied:* ${escapeMarkdown(appliedOfferTitle || 'Applied Offer')} (${appliedDiscountPercent}% OFF)\n` +
+                        `💰 Price: ~₹${formatInr(plan.price)}~ → *₹${formatInr(discountedPlanPrice)}*\n\n`
+                        : '\n') +
+                    `Admin screenshot verify karke approval denge. Approval ke baad isi category plan me days add honge.`,
                     { parse_mode: 'Markdown' }
                 );
                 return;
             }
 
-            const renewalReq = await Request.create({
-                userId: user._id,
-                telegramId: ctx.from.id,
-                status: 'pending',
-                requestCategory: renewalCategory,
-                selectedPlanId: plan._id,
-                paymentProof: {
-                    fileId,
-                    fileUniqueId,
-                    sourceType,
-                    logMessageId: null,
-                },
-            });
-
-            const consumedOffer = await consumeOneTimeUserOffer(ctx.from.id, renewalReq._id);
-            const bestOffer = await getBestPublicOffer(plan._id);
-            const privateDiscountPercent = Number(consumedOffer?.discountPercent || 0);
-            const publicDiscountPercent = Number(bestOffer?.discountPercent || 0);
-            const appliedDiscountPercent = privateDiscountPercent > 0
-                ? privateDiscountPercent
-                : publicDiscountPercent;
-            const appliedOfferTitle = privateDiscountPercent > 0
-                ? consumedOffer?.title
-                : bestOffer?.title;
-            const discountedPlanPrice = appliedDiscountPercent > 0
-                ? getDiscountedPrice(plan.price, appliedDiscountPercent)
-                : plan.price;
-            if (consumedOffer) {
-                await Request.findByIdAndUpdate(renewalReq._id, {
-                    appliedUserOffer: {
-                        offerId: consumedOffer._id,
-                        title: consumedOffer.title,
-                        discountPercent: consumedOffer.discountPercent,
-                    },
-                });
-            } else if (bestOffer?.discountPercent > 0) {
-                await Request.findByIdAndUpdate(renewalReq._id, {
-                    appliedUserOffer: {
-                        offerId: bestOffer._id,
-                        title: bestOffer.title,
-                        discountPercent: Number(bestOffer.discountPercent || 0),
-                    },
-                });
-            }
-
-            await User.findByIdAndUpdate(user._id, {
-                ...buildSetUserFlowUpdate(
-                    USER_FLOW_STATE.IDLE,
-                    {},
+            await User.findOneAndUpdate(
+                { telegramId: ctx.from.id },
+                buildSetUserFlowUpdate(
+                    USER_FLOW_STATE.AWAITING_PAYMENT_SCREENSHOT,
                     {
-                        'meta.latestPaymentProof': '',
-                        'meta.paymentProofReadyForCategory': '',
-                        'meta.paymentCategory': '',
-                        'meta.paymentFlowType': '',
-                        'meta.renewalPlanId': '',
-                        'meta.paymentSelectedPlanId': '',
-                    }
-                ),
-            });
-
-            const safePlanName = escapeMarkdown(plan.name);
-            const renewalLogCaption =
-                `🔄 *Renewal Request*\n\n` +
-                `📦 Category: *${escapeMarkdown(categoryLabel)}*\n` +
-                `👤 Name: ${safeName}\n` +
-                `🆔 ID: \`${ctx.from.id}\`\n` +
-                `📛 Username: ${safeUsername}\n` +
-                (plan.price && appliedDiscountPercent > 0
-                    ? `🎁 Offer: *${escapeMarkdown(appliedOfferTitle || 'Applied Offer')}* (${appliedDiscountPercent}% OFF)\n` +
-                    `💰 Price: ~₹${formatInr(plan.price)}~ → *₹${formatInr(discountedPlanPrice)}*\n`
-                    : '') +
-                `📋 Plan: ${safePlanName} (${plan.durationDays} days${plan.price ? ` · ₹${formatInr(plan.price)}` : ''})\n` +
-                `🕒 Time: ${new Date().toLocaleString('en-IN')}`;
-
-            const renewalKeyboard = {
-                inline_keyboard: [[
-                    withStyle({ text: '✅ Approve', callback_data: `approve_${renewalReq._id}_${plan._id}` }, 'success'),
-                    withStyle({ text: '❌ Reject', callback_data: `reject_${renewalReq._id}` }, 'danger'),
-                ]],
-            };
-
-            let logMsg;
-            try {
-                logMsg = sourceType === 'photo'
-                    ? await bot.telegram.sendPhoto(
-                        process.env.LOG_CHANNEL_ID,
-                        fileId,
-                        {
-                            caption: renewalLogCaption,
-                            parse_mode: 'Markdown',
-                            reply_markup: renewalKeyboard,
-                        }
-                    )
-                    : await bot.telegram.sendDocument(
-                        process.env.LOG_CHANNEL_ID,
-                        fileId,
-                        {
-                            caption: renewalLogCaption,
-                            parse_mode: 'Markdown',
-                            reply_markup: renewalKeyboard,
-                        }
-                    );
-            } catch (err) {
-                logger.error(`renewal log channel send error: ${err.message}`);
-                logMsg = await bot.telegram.sendMessage(
-                    process.env.LOG_CHANNEL_ID,
-                    `${renewalLogCaption}\n\n⚠️ (Could not attach file; see user chat.)`,
-                    { parse_mode: 'Markdown', reply_markup: renewalKeyboard }
-                );
-            }
-
-            await Request.findByIdAndUpdate(renewalReq._id, {
-                logMessageId: logMsg.message_id,
-                'paymentProof.logMessageId': logMsg.message_id,
-            });
-
-            await ctx.reply(
-                `✅ *${escapeMarkdown(categoryLabel)} renewal request submitted!*\n\n` +
-                `📋 Plan: *${escapeMarkdown(plan.name)}* (${plan.durationDays} days${plan.price ? ` · ₹${formatInr(plan.price)}` : ''})\n` +
-                (plan.price && appliedDiscountPercent > 0
-                    ? `🎁 *Offer applied:* ${escapeMarkdown(appliedOfferTitle || 'Applied Offer')} (${appliedDiscountPercent}% OFF)\n` +
-                    `💰 Price: ~₹${formatInr(plan.price)}~ → *₹${formatInr(discountedPlanPrice)}*\n\n`
-                    : '\n') +
-                `Admin screenshot verify karke approval denge. Approval ke baad isi category plan me days add honge.`,
-                { parse_mode: 'Markdown' }
-            );
-            return;
-        }
-
-        await User.findOneAndUpdate(
-            { telegramId: ctx.from.id },
-            buildSetUserFlowUpdate(
-                USER_FLOW_STATE.AWAITING_PAYMENT_SCREENSHOT,
-                {
-                    'meta.paymentProofReadyForCategory': category,
-                    'meta.latestPaymentProof': {
-                        fileId,
-                        fileUniqueId,
-                        sourceType,
-                        logMessageId: null,
-                        category,
-                        uploadedAt: new Date(),
+                        'meta.paymentProofReadyForCategory': category,
+                        'meta.latestPaymentProof': {
+                            fileId,
+                            fileUniqueId,
+                            sourceType,
+                            logMessageId: null,
+                            category,
+                            uploadedAt: new Date(),
+                        },
                     },
-                },
-            )
-        );
+                )
+            );
 
-        await submitPremiumRequest(ctx, category);
+            await submitPremiumRequest(ctx, category);
         } finally {
             releasePaymentProofLock(telegramId);
         }

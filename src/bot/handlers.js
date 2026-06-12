@@ -69,6 +69,14 @@ const PLAN_CATEGORY_BUTTON_LABELS = {
   [PLAN_CATEGORY.NON_DESI]: 'Non-Desi Po*n Plan',
 };
 
+const PLAN_TERMS_URL = 'https://graph.org/IMAX-PREMIUM-Terms--Conditions-05-15';
+
+const PLAN_CATEGORY_HEADING_LABELS = {
+  [PLAN_CATEGORY.MOVIE]: `Movie Plan ([T&C](${PLAN_TERMS_URL})) Must Read This`,
+  [PLAN_CATEGORY.DESI]: `Desi Plan ([T&C](${PLAN_TERMS_URL})) Must Read This`,
+  [PLAN_CATEGORY.NON_DESI]: `Non-Desi Plan ([T&C](${PLAN_TERMS_URL})) Must Read This`,
+};
+
 const QR_ASSET_BY_CATEGORY = {
   [PLAN_CATEGORY.MOVIE]: 'qr-code.jpg',
   [PLAN_CATEGORY.DESI]: 'qr-code.jpg',
@@ -449,14 +457,16 @@ const registerUserHandlers = (bot) => {
   ]);
 
   const startMenuKeyboard = () => Markup.inlineKeyboard([
-    [withStyle(Markup.button.callback('📋 Check Plans', 'check_plans'), 'success')],
+    [withStyle(Markup.button.callback('🎬 Movie Plan', 'plan_menu_movie'), 'success')],
+    [withStyle(Markup.button.callback('🔞 Desi Plan', 'plan_menu_desi'), 'success')],
+    [withStyle(Markup.button.callback('🔞 Non-Desi Plan', 'plan_menu_non_desi'), 'success')],
     [withStyle(Markup.button.callback('📱 More Menu', 'more_menu'), 'primary')],
   ]);
 
   const CHECK_PLANS_MENU_CONFIG = [
-    { category: PLAN_CATEGORY.MOVIE, text: '🎬 Movie Plan', callback: 'plan_menu_movie', style: 'primary' },
-    { category: PLAN_CATEGORY.DESI, text: '🔥 Desi Po*n Plan', callback: 'plan_menu_desi', style: 'primary' },
-    { category: PLAN_CATEGORY.NON_DESI, text: '🌍 Non-Desi Po*n Plan', callback: 'plan_menu_non_desi', style: 'primary' },
+    { category: PLAN_CATEGORY.MOVIE, text: '🎬 Movie Plan', callback: 'plan_menu_movie', style: 'success' },
+    { category: PLAN_CATEGORY.DESI, text: '🔞 Desi Plan', callback: 'plan_menu_desi', style: 'success' },
+    { category: PLAN_CATEGORY.NON_DESI, text: '🔞 Non-Desi Plan', callback: 'plan_menu_non_desi', style: 'success' },
   ];
 
   const checkPlansKeyboard = async () => {
@@ -478,15 +488,15 @@ const registerUserHandlers = (bot) => {
     [withStyle(Markup.button.callback('🎁 View Current Offers', 'view_offers'), 'primary')],
     [withStyle(Markup.button.callback('🔗 My referal link', 'my_referral'), 'primary')],
     [withStyle(Markup.button.callback('🛍 Seller Program', 'seller_program'), 'primary')],
-    [Markup.button.url('🎫 Contact Support', SUPPORT_CONTACT_URL)],
+    [withStyle(Markup.button.url('🎫 Contact Support', SUPPORT_CONTACT_URL), 'primary')],
     [withStyle(Markup.button.callback('⬅️ Back button', 'back_to_main'), 'success')],
   ]);
 
   const premiumSelectionKeyboard = () => Markup.inlineKeyboard([
     [withStyle(Markup.button.callback('🎬 Movie Premium', 'request_premium_movie'), 'success')],
-    [withStyle(Markup.button.callback('🔥 Desi Premium', 'request_premium_desi'), 'success')],
-    [withStyle(Markup.button.callback('🌍 Non Desi Premium', 'request_premium_non_desi'), 'success')],
-    [Markup.button.url('🎫 Support Chat', SUPPORT_CONTACT_URL)],
+    [withStyle(Markup.button.callback('🔞 Desi Premium', 'request_premium_desi'), 'success')],
+    [withStyle(Markup.button.callback('🔞 Non-Desi Premium', 'request_premium_non_desi'), 'success')],
+    [withStyle(Markup.button.url('🎫 Support Chat', SUPPORT_CONTACT_URL), 'primary')],
   ]);
 
   const renewCategoryKeyboard = (categories) => {
@@ -514,7 +524,8 @@ const registerUserHandlers = (bot) => {
 
   const buildCategoryPlansText = async (category, options = {}) => {
     const plans = await getCategoryPlans(category);
-    const title = PLAN_CATEGORY_BUTTON_LABELS[normalizePlanCategory(category)] || getPlanCategoryLabel(category);
+    const normalizedCategory = normalizePlanCategory(category);
+    const title = PLAN_CATEGORY_HEADING_LABELS[normalizedCategory] || PLAN_CATEGORY_BUTTON_LABELS[normalizedCategory] || getPlanCategoryLabel(category);
     if (!plans.length) {
       return `📋 ${title}\n\nNo active plans found for this category right now.\nPlease contact support from More Menu.`;
     }
@@ -561,24 +572,52 @@ const registerUserHandlers = (bot) => {
 
   const sendMainMenuMessage = async (ctx, userName = 'User', options = {}) => {
     const menuKeyboard = options?.includeNonDesiRejoin ? startMenuKeyboard() : mainMenuKeyboard();
-    await ctx.reply(
+    const caption =
       `👋 *Welcome, ${escapeMarkdown(userName)}!*\n\n` +
-      `Help k liye uper ki video dekhein.\n\n ` +
-      `Premium lene ke liye pehle *Check Plans* pe tap karein.\n\n` +
-      `Agar payment already ho gaya hai, toh *Check Plans* me category select karke *Paid* button pe tap karke apna payment proof submit karein.\n\n`,
-      {
-        parse_mode: 'Markdown',
-        ...menuKeyboard,
+      `Help k liye uper ki video dekhein.\n\n` +
+      `Premium lene ke liye niche diye gaye category buttons me se select karein.\n\n` +
+      `Agar payment already ho gaya hai, toh *Check Plans* me category select karke *Paid* button pe tap karke apna payment proof submit karein.\n\n`;
+
+    try {
+      if (startHelpVideoFileId) {
+        await ctx.replyWithVideo(startHelpVideoFileId, {
+          caption,
+          parse_mode: 'Markdown',
+          ...menuKeyboard,
+        });
+        return;
       }
-    );
+
+      const helpVideoPath = path.join(process.cwd(), 'assets', 'Help_Video.mp4');
+      if (fs.existsSync(helpVideoPath)) {
+        const sent = await ctx.replyWithVideo(
+          { source: helpVideoPath },
+          {
+            caption,
+            parse_mode: 'Markdown',
+            ...menuKeyboard,
+          }
+        );
+
+        startHelpVideoFileId = sent?.video?.file_id || startHelpVideoFileId;
+        return;
+      }
+    } catch (err) {
+      logger.warn(`sendMainMenuMessage video send failed: ${err.message}`);
+    }
+
+    await ctx.reply(caption, {
+      parse_mode: 'Markdown',
+      ...menuKeyboard,
+    });
   };
 
   const sendStartWelcomeMessage = async (ctx, userName = 'User') => {
     const caption =
       `👋 *Welcome, ${escapeMarkdown(userName)}!*\n\n` +
-      `Help k liye uper ki video dekhein.\n\n ` +
-      `Premium lene ke liye pehle *Check Plans* pe tap karein.\n\n` +
-      `Agar payment already ho gaya hai, toh *Check Plans* me category select karke *Paid* button pe tap karke apna payment proof submit karein.\n\n`;
+      `Help k liye uper ki video dekhein.\n\n` +
+      `Premium lene ke liye niche diye gaye category buttons me se select karein.\n\n` +
+      `Agar payment already ho gaya hai, toh relevant category me "Paid" button dabakar apna payment proof submit karein.\n\n`;
 
     try {
       if (startHelpVideoFileId) {
@@ -918,7 +957,7 @@ const registerUserHandlers = (bot) => {
       `Payment ya approval me koi issue ho to support se contact karein.`;
 
     const keyboard = Markup.inlineKeyboard([
-      [Markup.button.url('🎫 Support Chat', SUPPORT_CONTACT_URL)],
+      [withStyle(Markup.button.url('🎫 Support Chat', SUPPORT_CONTACT_URL), 'primary')],
       [withStyle(Markup.button.callback('⬅️ Back', 'back_to_main'), 'success')],
     ]);
 
