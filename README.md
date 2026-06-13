@@ -220,6 +220,7 @@ In production, set `HEALTH_CHECK_TOKEN` and/or `HEALTH_CHECK_ALLOWED_IPS`. The a
 | `CRON_TIMEZONE` | `Asia/Kolkata` |
 | `REMINDER_CRON_SCHEDULES` | `15 9 * * *,0 20 * * *,15 23 * * *` |
 | `EXPIRY_ENFORCEMENT_CRON_SCHEDULES` | `0 8 * * *,0 14 * * *,30 20 * * *` |
+| `CLEANUP_CRON_SCHEDULE` | `20 3 * * *` |
 
 ### Mongo DNS/retry tuning
 
@@ -342,6 +343,7 @@ Configured in `src/services/cronService.js`.
 | `offerExpiryChecker` | `5 0 * * *` | Deactivate expired offers |
 | `inviteLinkExpiryNotifier` | `*/15 * * * *` | Expired invite link nudges |
 | `pendingRequestReminderJob` | `0 */2 * * *` | Pending request follow-up reminders |
+| `cleanupRetentionJob` | `CLEANUP_CRON_SCHEDULE` | Retention cleanup for stale requests, admin logs, summaries, invite metadata, and old log files |
 
 ## Data Model Summary
 

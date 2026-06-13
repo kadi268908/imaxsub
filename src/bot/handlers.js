@@ -803,6 +803,11 @@ const registerUserHandlers = (bot) => {
       });
     }
 
+    const appliedDiscountPercent = Number(consumedOffer?.discountPercent || 0);
+    const discountedPlanPrice = isSelectedPlanValid && Number(selectedPlan?.price || 0) > 0 && appliedDiscountPercent > 0
+      ? getDiscountedPrice(selectedPlan.price, appliedDiscountPercent)
+      : null;
+
     await User.findByIdAndUpdate(user._id, {
       status: 'pending',
       ...buildSetUserFlowUpdate(
@@ -851,11 +856,13 @@ const registerUserHandlers = (bot) => {
       (isSelectedPlanValid
         ? `📋 Selected Plan: *${escapeMarkdown(selectedPlan.name)}* (${selectedPlan.durationDays} days${selectedPlan.price ? ` · ₹${formatInr(selectedPlan.price)}` : ''})\n`
         : '') +
+      (discountedPlanPrice !== null
+        ? `💰 Offer Price: ~₹${formatInr(selectedPlan.price)}~ → *₹${formatInr(discountedPlanPrice)}*${appliedDiscountPercent > 0 ? ` (${appliedDiscountPercent}% OFF)` : ''}\n`
+        : '') +
       (consumedOffer
         ? `🎁 Private Offer: *${escapeMarkdown(consumedOffer.title)}*${consumedOffer.discountPercent > 0 ? ` (*${consumedOffer.discountPercent}% OFF*)` : ''}\n`
         : '') +
       `🕒 Time: ${new Date().toLocaleString('en-IN')}`;
-
     let logMsg;
     try {
       const proofSource = String(latestProof.sourceType || 'photo').toLowerCase();
