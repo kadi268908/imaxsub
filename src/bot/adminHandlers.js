@@ -62,213 +62,218 @@ const getSubscriptionGroupId = (subscription) => {
 
 const clearStoredInviteLink = async (subscriptionId) => {
   if (!subscriptionId) return;
-  await Subscription.findByIdAndUpdate(subscriptionId, {
-    inviteLink: null,
-    inviteLinkIssuedAt: null,
-    inviteLinkTtlMinutes: null,
-  });
-};
+  const runExtendDaysConfirmed = async (ctx, payload) => {
+    const { categoryInput, days } = payload;
+    try {
+      const result = await extendActiveSubscriptionsByDays({
+        category: categoryInput,
+        days,
+      });
 
-const revokeSubscriptionInviteLink = async (bot, subscription) => {
-  if (!subscription?.inviteLink) return;
-  const groupId = getSubscriptionGroupId(subscription);
-  if (!groupId) {
-    await clearStoredInviteLink(subscription._id);
-    return;
-  }
+      if (!result.matchedCount) {
+        return ctx.reply(
+          `ℹ️ No active subscriptions found for category *${escapeMarkdown(result.category)}*.`,
+          { parse_mode: 'Markdown' }
+        );
+      }
 
-  await revokeInviteLink(bot, groupId, subscription.inviteLink);
-  await clearStoredInviteLink(subscription._id);
-};
+      await AdminLog.create({
+        adminId: ctx.from.id,
+        actionType: 'extend_days',
+        details: {
+          mode: 'all',
+          category: result.category,
+          days: result.days,
+          matchedCount: result.matchedCount,
+          modifiedCount: result.modifiedCount,
+        },
+      });
 
-const VALID_PLAN_CATEGORIES = new Set(Object.values(PLAN_CATEGORY));
-
-const parseCategoryInput = (value) => {
-  if (!value) return null;
-  const normalized = String(value).toLowerCase().replace(/[-\s]/g, '_');
-  if (!VALID_PLAN_CATEGORIES.has(normalized)) return null;
-  return normalized;
-};
-
-const getActiveSubscriptions = async (telegramId) => {
-  return Subscription.find({
-    telegramId,
-    status: 'active',
-  }).sort({ expiryDate: -1, createdAt: -1 });
-};
-
-const resolveSubscriptionForAdminAction = async (telegramId, categoryInput = null) => {
-  const subscriptions = await getActiveSubscriptions(telegramId);
-  if (!subscriptions.length) {
-    return { error: 'none' };
-  }
-
-  const normalizedCategory = categoryInput ? parseCategoryInput(categoryInput) : null;
-  if (categoryInput && !normalizedCategory) {
-    return { error: 'invalid_category' };
-  }
-
-  if (normalizedCategory) {
-    const matched = subscriptions.find(
-      (sub) => normalizePlanCategory(sub.planCategory || sub.planId?.category || 'movie') === normalizedCategory
-    );
-    if (!matched) {
-      return { error: 'category_not_found', normalizedCategory, subscriptions };
+      await ctx.reply(
+        `✅ Extended *${escapeMarkdown(result.category)}* active subscriptions by *${result.days} days*.` +
+        `\nUpdated subscriptions: *${result.modifiedCount}*` +
+        `\nMatched records: *${result.matchedCount}*`,
+        { parse_mode: 'Markdown' }
+      );
+    } catch (err) {
+      logger.error(`days confirmed error: ${err.message}`);
+      await ctx.reply(
+        `❌ Failed to extend active subscriptions. ${escapeMarkdown(err.message || 'Please try again.')}`,
+        { parse_mode: 'Markdown' }
+      );
     }
-    return { subscription: matched, normalizedCategory, subscriptions };
-  }
-
-  if (subscriptions.length > 1) {
-    return { error: 'ambiguous', subscriptions };
-  }
-
-  return {
-    subscription: subscriptions[0],
-    normalizedCategory: normalizePlanCategory(subscriptions[0].planCategory || subscriptions[0].planId?.category || 'movie'),
-    subscriptions,
   };
-};
 
-const promptAdminButtonConfirmation = async (ctx, { actionType, payload, summaryMarkdown }) => {
-  const token = crypto.randomBytes(16).toString('hex');
-  const expiresAt = Date.now() + (ADMIN_ACTION_CONFIRM_TTL_SECONDS * 1000);
-  pendingAdminButtonConfirmations.set(token, {
-    actionType,
-    adminTelegramId: ctx.from.id,
-    expiresAt,
-    payload,
-  });
-  await ctx.reply(
-    `⚠️ *Confirmation Required*\n\n${summaryMarkdown}\n\n` +
-    `Tap *Confirm* to proceed or *Cancel* to dismiss. (${ADMIN_ACTION_CONFIRM_TTL_SECONDS}s)`,
-    {
-      parse_mode: 'Markdown',
-      reply_markup: {
-        inline_keyboard: [[
-          withStyle({ text: '✅ Confirm', callback_data: `adm_conf_${token}` }, 'success'),
-          withStyle({ text: '❌ Cancel', callback_data: `adm_can_${token}` }, 'danger'),
-        ]],
-      },
+  const runModifyPlanConfirmed = async (ctx, payload) => {
+    const {
+      targetId,
+      planId,
+      subscriptionId,
+      resetExpiryFromToday,
+    } = payload;
+    try {
+      const plan = await Plan.findById(planId);
+      const activeSub = await Subscription.findOne({
+        _id: subscriptionId,
+        telegramId: targetId,
+        status: 'active',
+      }).populate('planId');
+
+      if (!plan || !activeSub) {
+        return ctx.reply('ℹ️ Subscription or plan changed; please run /modifyplan again.');
+      }
+
+      const targetCategory = normalizePlanCategory(activeSub.planCategory || activeSub.planId?.category || 'movie');
+      const planCategory = normalizePlanCategory(plan.category || 'movie');
+      if (planCategory !== targetCategory) {
+        return ctx.reply(
+          `❌ Plan category mismatch.\n` +
+          `You are editing *${escapeMarkdown(targetCategory)}* subscription but selected plan is *${escapeMarkdown(planCategory)}*.\n\n` +
+          `Pick a plan in the same category, or use a different tool to move users between categories.`,
+          { parse_mode: 'Markdown' }
+        );
+      }
+
+      const oldGroupId = getSubscriptionGroupId(activeSub);
+      const previousPlan = activeSub.planName;
+      const now = new Date();
+
+      let newExpiry;
+      let durationDaysToStore;
+      if (resetExpiryFromToday) {
+        newExpiry = new Date(now.getTime() + (plan.durationDays * 24 * 60 * 60 * 1000));
+        durationDaysToStore = plan.durationDays;
+      } else {
+        newExpiry = activeSub.expiryDate ? new Date(activeSub.expiryDate) : null;
+        if (!newExpiry || newExpiry.getTime() <= now.getTime()) {
+          return ctx.reply(
+            'ℹ️ This subscription is already expired or has no valid expiry.\n' +
+            'Use the same command with `|reset` last to start a fresh period from today.'
+          );
+        }
+        const msPerDay = 24 * 60 * 60 * 1000;
+        durationDaysToStore = Math.max(1, Math.ceil((newExpiry.getTime() - now.getTime()) / msPerDay));
+      }
+
+      const newPlanCategory = planCategory;
+      const newGroupId = getGroupIdForCategory(newPlanCategory);
+      if (!newGroupId) {
+        return ctx.reply(`❌ Premium group not configured for category: ${newPlanCategory}`);
+      }
+
+      activeSub.planId = plan._id;
+      activeSub.planName = plan.name;
+      activeSub.planCategory = newPlanCategory;
+      activeSub.premiumGroupId = newGroupId;
+      activeSub.durationDays = durationDaysToStore;
+      activeSub.expiryDate = newExpiry;
+      activeSub.status = 'active';
+      activeSub.approvedBy = ctx.from.id;
+      activeSub.isRenewal = false;
+      if (resetExpiryFromToday) {
+        activeSub.startDate = now;
+        activeSub.reminderFlags = { day7: false, day3: false, day1: false, day0: false };
+      }
+      await activeSub.save();
+
+      await User.findOneAndUpdate(
+        { telegramId: targetId },
+        { status: 'active', lastInteraction: new Date() }
+      );
+
+      if (oldGroupId && String(oldGroupId) !== String(newGroupId)) {
+        await revokeSubscriptionInviteLink(bot, activeSub);
+        await banFromGroup(bot, oldGroupId, targetId);
+      }
+
+      const alreadyInGroup = await isGroupMember(bot, newGroupId, targetId);
+      const extra = { parse_mode: 'Markdown' };
+      let userMsg =
+        `✅ *Your subscription plan has been updated by admin.*\n\n` +
+        `📋 New Plan: *${escapeMarkdown(plan.name)}*\n` +
+        `📅 Remaining / term: *${durationDaysToStore} days*\n` +
+        `⏰ Expires on: *${formatDate(newExpiry)}*`;
+
+      let shouldPinInviteMessage = false;
+      if (!alreadyInGroup) {
+        await revokeSubscriptionInviteLink(bot, activeSub);
+        await unbanFromGroup(bot, newGroupId, targetId);
+        const inviteLink = await generateInviteLink(bot, newGroupId, targetId, newExpiry);
+        if (inviteLink) {
+          extra.reply_markup = {
+            inline_keyboard: [[{ text: '🔗 Join Premium Group', url: inviteLink, style: 'success' }]],
+          };
+          userMsg += `\n\nGroup join karne ke liye niche button par click karein.`;
+          shouldPinInviteMessage = true;
+          await Subscription.findByIdAndUpdate(activeSub._id, {
+            inviteLink,
+            inviteLinkIssuedAt: new Date(),
+            inviteLinkTtlMinutes: Math.max(1, parseInt(process.env.INVITE_LINK_TTL_MINUTES || '10', 10)),
+          });
+        }
+      } else {
+        userMsg += `\n\n✅ Aap already premium group me ho. Isliye naya invite link nahi bheja gaya.`;
+        extra.reply_markup = {
+          inline_keyboard: [[{ text: '🎫 Support Chat', url: SUPPORT_CONTACT_URL, style: 'primary' }]],
+        };
+      }
+
+      await safeSendAndPin(bot, targetId, userMsg, extra, { pin: shouldPinInviteMessage });
+
+      await AdminLog.create({
+        adminId: ctx.from.id,
+        actionType: 'edit_plan',
+        targetUserId: targetId,
+        details: {
+          reason: 'Correct wrong selected plan',
+          subscriptionId: activeSub._id,
+          previousPlan,
+          previousCategory: targetCategory,
+          newPlan: plan.name,
+          newCategory: newPlanCategory,
+          planTemplateDurationDays: plan.durationDays,
+          storedDurationDays: durationDaysToStore,
+          expiryMode: resetExpiryFromToday ? 'reset_from_today' : 'preserve_existing',
+          newExpiry: newExpiry.toISOString(),
+        },
+      });
+
+      await ctx.reply(
+        `✅ Plan updated for user \`${targetId}\`.\n` +
+        `*${escapeMarkdown(previousPlan)}* → *${escapeMarkdown(plan.name)}*\n` +
+        `Category: *${escapeMarkdown(newPlanCategory)}*\n` +
+        `${resetExpiryFromToday ? 'Expiry' : 'Expiry (unchanged)'}: *${escapeMarkdown(formatDate(newExpiry))}*\n` +
+        `Mode: *${resetExpiryFromToday ? 'reset from today' : 'preserve expiry'}*`,
+        { parse_mode: 'Markdown' }
+      );
+    } catch (err) {
+      logger.error(`modifyplan confirmed error: ${err.message}`);
+      await ctx.reply('❌ Failed to modify plan. Please try again.');
     }
-  );
-};
+  };
+  await ctx.editMessageReplyMarkup({ inline_keyboard: [] });
+} catch (err) {
+  if (!isMessageNotModifiedError(err)) { /* ignore */ }
+}
+return;
+  }
 
-const formatSubscriptionCategoryList = (subscriptions) => {
-  return subscriptions
-    .map((sub) => {
-      const category = normalizePlanCategory(sub.planCategory || sub.planId?.category || 'movie');
-      return `- ${category}: ${sub.planName} (expires ${formatDate(sub.expiryDate)})`;
-    })
-    .join('\n');
-};
-
-const getDiscountedPrice = (price, discountPercent) => {
-  const base = Number(price || 0);
-  const discount = Number(discountPercent || 0);
-  if (!base || discount <= 0) return base;
-  return Math.ceil(Math.max(0, base - (base * discount / 100)));
-};
-
-const escapeMarkdown = (value) => {
-  return String(value ?? '').replace(/([\\_*`\[])/g, '\\$1');
-};
-
-const isMessageNotModifiedError = (err) => {
-  const message = err?.response?.description || err?.description || err?.message || '';
-  return String(message).toLowerCase().includes('message is not modified');
-};
-
-const isParseEntityError = (err) => {
-  const message = err?.response?.description || err?.description || err?.message || '';
-  return String(message).toLowerCase().includes("can't parse entities");
-};
-
-const markdownToPlainText = (text) => {
-  return String(text || '')
-    .replace(/\\([\\_*`\[])/g, '$1')
-    .replace(/`/g, '');
-};
-
-const replyMarkdownOrPlain = async (ctx, text, extra = {}) => {
+if (msg.text !== undefined) {
+  const base = stripRejectReasonPromptFromText(String(msg.text || ''));
   try {
-    await ctx.reply(text, { parse_mode: 'Markdown', ...extra });
+    await ctx.editMessageText(base + footerMd, {
+      parse_mode: 'Markdown',
+      reply_markup: { inline_keyboard: [] },
+    });
   } catch (err) {
-    if (!isParseEntityError(err)) throw err;
-    await ctx.reply(markdownToPlainText(text), extra);
-  }
-};
-
-const REJECT_REASON_PROMPT_MD = '⚠️ *Select rejection reason below:*';
-const REJECT_REASON_PROMPT_PLAIN = '⚠️ Select rejection reason below:';
-
-const stripRejectReasonPromptFromText = (text) => {
-  return String(text || '')
-    .replace(/\n*\s*⚠️\s*\*?Select rejection reason below:\*?\s*/gi, '\n')
-    .trimEnd();
-};
-
-const appendRejectReasonPromptOnce = (text) => {
-  const cleaned = stripRejectReasonPromptFromText(text);
-  return `${cleaned}\n\n${REJECT_REASON_PROMPT_MD}`;
-};
-
-/** After approve: append status to log message and remove plan/reject buttons (works for photo, document, or text). */
-const applyApprovalTransformToLogMessage = async (ctx, { planName, allRenewal }) => {
-  const msg = ctx.callbackQuery?.message;
-  if (!msg) return;
-
-  const approver = ctx.from.username
-    ? `@${escapeMarkdown(ctx.from.username)}`
-    : `\`${ctx.from.id}\``;
-  const safePlan = escapeMarkdown(planName);
-  const footerMd = `\n\n✅ *APPROVED* by ${approver} — *${safePlan}*${allRenewal ? '\n📌 _Renewal approval_' : ''}`;
-  const footerPlain = `\n\n✅ APPROVED by ${ctx.from.username ? `@${ctx.from.username}` : ctx.from.id} — ${planName}${allRenewal ? ' [RENEWAL]' : ''}`;
-
-  const hasPhoto = Array.isArray(msg.photo) && msg.photo.length > 0;
-  const hasDocument = Boolean(msg.document);
-
-  if (hasPhoto || hasDocument) {
-    const base = stripRejectReasonPromptFromText(String(msg.caption || ''));
-    let nextCaption = base + footerMd;
-    if (nextCaption.length > 1024) {
-      const reserve = Math.min(footerPlain.length + 10, 200);
-      nextCaption = `${base.slice(0, Math.max(0, 1024 - reserve))}…${footerPlain}`;
-    }
+    if (isMessageNotModifiedError(err)) return;
     try {
-      await ctx.editMessageCaption(nextCaption, { parse_mode: 'Markdown' });
-    } catch (err) {
-      if (isMessageNotModifiedError(err)) return;
-      try {
-        const plainCap = base.length > 1024 - footerPlain.length
-          ? `${base.slice(0, Math.max(0, 1024 - footerPlain.length - 2))}…${footerPlain}`
-          : base + footerPlain;
-        await ctx.editMessageCaption(plainCap);
-      } catch (_) { /* ignore */ }
-    }
-    try {
-      await ctx.editMessageReplyMarkup({ inline_keyboard: [] });
-    } catch (err) {
-      if (!isMessageNotModifiedError(err)) { /* ignore */ }
-    }
-    return;
-  }
-
-  if (msg.text !== undefined) {
-    const base = stripRejectReasonPromptFromText(String(msg.text || ''));
-    try {
-      await ctx.editMessageText(base + footerMd, {
-        parse_mode: 'Markdown',
+      await ctx.editMessageText(base + footerPlain, {
         reply_markup: { inline_keyboard: [] },
       });
-    } catch (err) {
-      if (isMessageNotModifiedError(err)) return;
-      try {
-        await ctx.editMessageText(base + footerPlain, {
-          reply_markup: { inline_keyboard: [] },
-        });
-      } catch (_) { /* ignore */ }
-    }
+    } catch (_) { /* ignore */ }
   }
+}
 };
 
 /** After reject: append status + reason, remove all inline buttons (photo, document, or text). */
