@@ -10,7 +10,6 @@ describe('module exports', () => {
     expect(s.expireSubscription).toEqual(expect.any(Function));
     expect(s.getSubscriptionsExpiringSoon).toEqual(expect.any(Function));
     expect(s.getExpiredUnprocessed).toEqual(expect.any(Function));
-    expect(s.extendActiveSubscriptionsByDays).toEqual(expect.any(Function));
     expect(s.getSalesReport).toEqual(expect.any(Function));
     expect(s.getSalesUserBreakdown).toEqual(expect.any(Function));
     expect(s.getTodayExpiryList).toEqual(expect.any(Function));

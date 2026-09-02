@@ -139,68 +139,6 @@ const getExpiredUnprocessed = async () => {
   });
 };
 
-const extendActiveSubscriptionsByDays = async ({ category, days, telegramIds = null } = {}) => {
-  const normalizedCategory = normalizePlanCategory(category);
-  if (!normalizedCategory) {
-    throw new Error('Invalid category. Use movie, desi, or non_desi.');
-  }
-
-  const extraDays = parseInt(days, 10);
-  if (!Number.isInteger(extraDays) || extraDays <= 0) {
-    throw new Error('Days must be a positive integer.');
-  }
-
-  const query = {
-    status: 'active',
-    expiryDate: { $gt: new Date() },
-    planCategory: normalizedCategory,
-  };
-
-  const targetTelegramIds = Array.isArray(telegramIds)
-    ? [...new Set(telegramIds.map((value) => parseInt(value, 10)).filter((value) => Number.isInteger(value) && value > 0))]
-    : [];
-
-  if (targetTelegramIds.length) {
-    query.telegramId = { $in: targetTelegramIds };
-  }
-
-  const activeSubs = await Subscription.find(query)
-    .sort({ telegramId: 1, expiryDate: -1, createdAt: -1 })
-    .lean();
-
-  if (!activeSubs.length) {
-    return {
-      category: normalizedCategory,
-      days: extraDays,
-      matchedCount: 0,
-      modifiedCount: 0,
-      matchedTelegramIds: [],
-    };
-  }
-
-  const bulkOps = activeSubs.map((sub) => ({
-    updateOne: {
-      filter: { _id: sub._id },
-      update: {
-        $set: {
-          expiryDate: addDays(new Date(sub.expiryDate), extraDays),
-        },
-      },
-    },
-  }));
-
-  const bulkResult = await Subscription.bulkWrite(bulkOps, { ordered: false });
-  const matchedTelegramIds = [...new Set(activeSubs.map((sub) => Number(sub.telegramId)).filter((value) => Number.isInteger(value) && value > 0))];
-
-  return {
-    category: normalizedCategory,
-    days: extraDays,
-    matchedCount: activeSubs.length,
-    modifiedCount: bulkResult?.modifiedCount ?? activeSubs.length,
-    matchedTelegramIds,
-  };
-};
-
 const getSalesReport = async (startDate, endDate) => {
   return Request.aggregate([
     {
@@ -402,7 +340,6 @@ module.exports = {
   expireSubscription,
   getSubscriptionsExpiringSoon,
   getExpiredUnprocessed,
-  extendActiveSubscriptionsByDays,
   getSalesReport,
   getSalesUserBreakdown,
   getTodayExpiryList,
